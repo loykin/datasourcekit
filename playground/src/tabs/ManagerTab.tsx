@@ -11,6 +11,13 @@ const TYPE_OPTIONS = ['postgres', 'mysql', 'clickhouse', 'redis']
 const inputCls = 'w-full text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-teal-500'
 const selectCls = 'w-full text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white'
 
+const DEFAULT_OPTIONS: Record<string, string> = {
+  postgres: '{\n  "host": "localhost",\n  "port": 5432,\n  "database": "app"\n}',
+  clickhouse: '{\n  "host": "localhost",\n  "port": 8123,\n  "database": "analytics"\n}',
+  mysql: '{\n  "host": "localhost",\n  "port": 3306,\n  "database": "reports"\n}',
+  redis: '{\n  "host": "localhost",\n  "port": 6379\n}',
+}
+
 export function ManagerTab({ manager }: Props) {
   const [instances, setInstances] = useState<DatasourceInstance[]>([])
   const [total, setTotal] = useState<number | undefined>()
@@ -18,6 +25,7 @@ export function ManagerTab({ manager }: Props) {
 
   const [createName, setCreateName] = useState('')
   const [createType, setCreateType] = useState('postgres')
+  const [createOptions, setCreateOptions] = useState(DEFAULT_OPTIONS.postgres)
   const [createError, setCreateError] = useState('')
 
   const [search, setSearch] = useState('')
@@ -66,7 +74,8 @@ export function ManagerTab({ manager }: Props) {
   async function handleCreate() {
     setCreateError('')
     try {
-      const ds = await manager.instances.create({ type: createType, name: createName })
+      const options = JSON.parse(createOptions) as Record<string, unknown>
+      const ds = await manager.instances.create({ type: createType, name: createName, options })
       await fetchList()
       setCreateName('')
       log('info', `create() → "${ds.uid}"`, { name: ds.name, type: ds.type })
@@ -105,9 +114,24 @@ export function ManagerTab({ manager }: Props) {
             </div>
             <div>
               <label className="block text-sm text-gray-600 mb-1">Type</label>
-              <select className={selectCls} value={createType} onChange={(e) => setCreateType(e.target.value)}>
+              <select
+                className={selectCls}
+                value={createType}
+                onChange={(e) => {
+                  setCreateType(e.target.value)
+                  setCreateOptions(DEFAULT_OPTIONS[e.target.value] ?? '{}')
+                }}
+              >
                 {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
+            </div>
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">Type-specific options</label>
+              <textarea
+                className={`${inputCls} font-mono min-h-28`}
+                value={createOptions}
+                onChange={(e) => setCreateOptions(e.target.value)}
+              />
             </div>
             {createError && <ErrorBadge message={createError} />}
             <button

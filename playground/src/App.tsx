@@ -10,19 +10,21 @@ import { TypesTab } from './tabs/TypesTab'
 import { ManagerTab } from './tabs/ManagerTab'
 import { ScenariosTab } from './tabs/ScenariosTab'
 import { RuntimeTab } from './tabs/RuntimeTab'
+import { CapabilitiesTab } from './tabs/CapabilitiesTab'
 
 const TABS = [
-  { id: 'purpose', label: 'Purpose' },
+  { id: 'overview', label: 'Overview' },
   { id: 'types', label: 'Types' },
   { id: 'manager', label: 'Datasources' },
   { id: 'query', label: 'Query Routing' },
-  { id: 'scenarios', label: 'Scenarios' },
+  { id: 'capabilities', label: 'Capabilities' },
+  { id: 'errors', label: 'Error Flows' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
 
 export default function App() {
-  const [active, setActive] = useState<TabId>('purpose')
+  const [active, setActive] = useState<TabId>('overview')
 
   const backendRef = useRef(createFakeBackend())
   const backend = backendRef.current
@@ -71,6 +73,8 @@ export default function App() {
       types: {
         list: () => backend.listTypes(),
         get: (type) => backend.getType(type),
+        install: (type) => backend.installType(type),
+        uninstall: (type) => backend.uninstallType(type),
         enable: (type) => backend.enableType(type),
         disable: (type) => backend.disableType(type),
       },
@@ -81,7 +85,7 @@ export default function App() {
         update: (uid, patch) => backend.update(uid, patch),
         delete: (uid) => backend.delete(uid),
       },
-      query: (request) => backend.query(request.datasourceUid),
+      query: (request) => backend.query(request),
       healthCheck: (uid) => backend.healthCheck(uid),
       validateQuery: async () => ({ valid: true }),
       listNamespaces: (uid) => backend.listNamespaces(uid),
@@ -95,16 +99,17 @@ export default function App() {
         columns: r.fields.map((name) => ({ name, type: 'string' })),
         rows: r.data,
         requestId: r.reqId,
-        meta: { uid: r.uid, normalized: true },
+        meta: { uid: r.uid, normalized: true, rawBackendResponse: raw },
       }
   }
 
   const content: Record<TabId, React.ReactNode> = {
-    purpose: <PurposeTab />,
+    overview: <PurposeTab />,
     types: <TypesTab manager={manager} />,
     manager: <ManagerTab manager={manager} />,
     query: <RuntimeTab manager={manager} />,
-    scenarios: <ScenariosTab manager={manager} backend={backend} />,
+    capabilities: <CapabilitiesTab manager={manager} />,
+    errors: <ScenariosTab manager={manager} backend={backend} />,
   }
 
   return (

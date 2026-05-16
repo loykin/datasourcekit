@@ -15,7 +15,7 @@ export function PurposeTab() {
           <p className="text-sm font-semibold text-gray-900 mb-2">Manager contract</p>
           <p className="text-sm text-gray-500">
             Apps wire their own backend handlers into{' '}
-            <code className="text-teal-700 bg-teal-50 px-1 rounded text-xs">defineDatasourceManager</code>.
+            <code className="text-teal-700 bg-teal-50 px-1 rounded text-xs">createDatasourceManager</code>.
             DatasourceKit provides the typed contract, not the store.
           </p>
         </div>

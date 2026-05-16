@@ -4,6 +4,7 @@ import {
   DatasourceNotFoundError,
   DatasourceValidationError,
   type DatasourceCreateInput,
+  type DataQuery,
   type DatasourceHealthResult,
   type DatasourceInstance,
   type DatasourceListOptions,
@@ -50,6 +51,19 @@ export function createFakeBackend() {
       return info
     },
 
+    async installType(type: string): Promise<void> {
+      if (!types.some((t) => t.type === type)) {
+        types = [...types, { type, name: type, installed: true, enabled: false }]
+        return
+      }
+      types = types.map((t) => t.type === type ? { ...t, installed: true } : t)
+    },
+
+    async uninstallType(type: string): Promise<void> {
+      await this.getType(type)
+      types = types.map((t) => t.type === type ? { ...t, installed: false, enabled: false } : t)
+    },
+
     async enableType(type: string): Promise<void> {
       await this.getType(type)
       types = types.map((t) => t.type === type ? { ...t, enabled: true } : t)
@@ -92,7 +106,16 @@ export function createFakeBackend() {
       if (!input.name.trim()) throw new DatasourceValidationError('name is required', ['name is required'])
       const uid = `ds-${Date.now()}`
       const now = makeTs()
-      const ds: DatasourceInstance = { uid, type: input.type, name: input.name.trim(), enabled: true, version: '1', createdAt: now, updatedAt: now }
+      const ds: DatasourceInstance = {
+        uid,
+        type: input.type,
+        name: input.name.trim(),
+        ...(input.options !== undefined ? { options: input.options } : {}),
+        enabled: true,
+        version: '1',
+        createdAt: now,
+        updatedAt: now,
+      }
       store = [...store, ds]
       return ds
     },
@@ -117,15 +140,18 @@ export function createFakeBackend() {
       store = store.filter((d) => d.uid !== uid)
     },
 
-    async query(uid: string): Promise<unknown> {
-      const ds = store.find((d) => d.uid === uid)
-      if (!ds) throw new DatasourceNotFoundError(uid)
+    async query(request: DataQuery): Promise<unknown> {
+      const ds = store.find((d) => d.uid === request.datasourceUid)
+      if (!ds) throw new DatasourceNotFoundError(request.datasourceUid)
+      const query = request.query && typeof request.query === 'object'
+        ? JSON.stringify(request.query)
+        : String(request.query ?? '')
       return {
         _raw: true,
-        fields: ['name', 'type', 'version'],
-        data: [[ds.name, ds.type, ds.version ?? '—']],
+        fields: ['name', 'type', 'query', 'options'],
+        data: [[ds.name, ds.type, query, JSON.stringify(request.options ?? {})]],
         reqId: `req-${Date.now()}`,
-        uid,
+        uid: ds.uid,
       }
     },
 

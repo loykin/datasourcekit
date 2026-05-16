@@ -64,6 +64,23 @@ export function TypesTab({ manager }: Props) {
     }
   }
 
+  async function toggleInstall(type: DatasourceTypeInfo) {
+    setError('')
+    try {
+      if (type.installed) {
+        await manager.types.uninstall?.(type.type)
+        log('info', `types.uninstall("${type.type}")`)
+      } else {
+        await manager.types.install?.(type.type)
+        log('info', `types.install("${type.type}")`)
+      }
+      await loadTypes()
+    } catch (err) {
+      setError(fmt(err))
+      log('error', fmt(err))
+    }
+  }
+
   useEffect(() => {
     loadTypes().catch((err) => log('error', fmt(err)))
   }, [manager])
@@ -86,7 +103,7 @@ export function TypesTab({ manager }: Props) {
 
       <div className="grid grid-cols-[1fr_360px] gap-4">
         <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-          <div className="px-5 py-3 border-b border-gray-200 grid grid-cols-[1.2fr_90px_90px_110px_120px_150px] gap-3 text-xs font-medium text-gray-500 uppercase tracking-wide">
+          <div className="px-5 py-3 border-b border-gray-200 grid grid-cols-[1.2fr_90px_90px_110px_120px_230px] gap-3 text-xs font-medium text-gray-500 uppercase tracking-wide">
             <span>Type</span>
             <span>Installed</span>
             <span>Enabled</span>
@@ -98,7 +115,7 @@ export function TypesTab({ manager }: Props) {
             {types.map((type) => (
               <div
                 key={type.type}
-                className="px-5 py-3 grid grid-cols-[1.2fr_90px_90px_110px_120px_150px] gap-3 items-center hover:bg-gray-50"
+                className="px-5 py-3 grid grid-cols-[1.2fr_90px_90px_110px_120px_230px] gap-3 items-center hover:bg-gray-50"
               >
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-gray-900">{type.name}</p>
@@ -110,6 +127,9 @@ export function TypesTab({ manager }: Props) {
                 <Status value={type.hasQueryEditor} />
                 <div className="flex items-center gap-2">
                   <button className={btnOutline} onClick={() => inspect(type.type)}>get</button>
+                  <button className={btnOutline} onClick={() => toggleInstall(type)}>
+                    {type.installed ? 'uninstall' : 'install'}
+                  </button>
                   <button
                     className={btnOutline}
                     onClick={() => toggle(type)}
@@ -145,6 +165,8 @@ export function TypesTab({ manager }: Props) {
 // both: postgres, clickhouse, mysql
 
 const type = await manager.types.get('postgres')
+await manager.types.install?.('prometheus')
+await manager.types.uninstall?.('redis')
 await manager.types.disable?.('redis')`}</CodeBlock>
           </div>
         </div>

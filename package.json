@@ -27,6 +27,7 @@
     "dev": "concurrently \"tsup --watch\" \"pnpm playground\"",
     "playground": "pnpm --dir playground dev",
     "playground:build": "pnpm --dir playground build",
+    "test": "pnpm build && node --test test/*.test.mjs",
     "type-check": "tsc -p tsconfig.json --noEmit"
   },
   "keywords": [
