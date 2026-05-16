@@ -359,27 +359,76 @@ export interface CreateRestDatasourceManagerOptions {
   baseUrl: string
   fetch?: typeof fetch
   getHeaders?: (context?: DatasourceContext) => HeadersInit | Promise<HeadersInit>
+  paths?: Partial<RestDatasourceManagerPaths>
+  unwrap?<T>(body: unknown, response: Response): T
+  createError?(response: Response, body: unknown): Error | undefined
 }
 
-async function parseResponse<T>(response: Response): Promise<T> {
-  if (response.ok) {
-    if (response.status === 204) return undefined as T
-    return response.json() as Promise<T>
-  }
+export interface RestDatasourceManagerPaths {
+  typesList(): string
+  typeGet(type: string): string
+  typeAction(type: string, action: 'install' | 'uninstall' | 'enable' | 'disable'): string
+  instancesList(queryString: string): string
+  instanceGet(uid: string): string
+  instanceCreate(): string
+  instanceUpdate(uid: string): string
+  instanceDelete(uid: string): string
+  query(): string
+  healthCheck(uid: string): string
+  validateQuery(uid: string): string
+  listNamespaces(uid: string): string
+  listFields(uid: string): string
+}
 
-  let body: { message?: string; errors?: string[] } | undefined
+const defaultRestPaths: RestDatasourceManagerPaths = {
+  typesList: () => '/types',
+  typeGet: (type) => `/types/${encodeURIComponent(type)}`,
+  typeAction: (type, action) => `/types/${encodeURIComponent(type)}/${action}`,
+  instancesList: (qs) => qs,
+  instanceGet: (uid) => `/${encodeURIComponent(uid)}`,
+  instanceCreate: () => '',
+  instanceUpdate: (uid) => `/${encodeURIComponent(uid)}`,
+  instanceDelete: (uid) => `/${encodeURIComponent(uid)}`,
+  query: () => '/query',
+  healthCheck: (uid) => `/${encodeURIComponent(uid)}/health`,
+  validateQuery: (uid) => `/${encodeURIComponent(uid)}/validate-query`,
+  listNamespaces: (uid) => `/${encodeURIComponent(uid)}/namespaces`,
+  listFields: (uid) => `/${encodeURIComponent(uid)}/fields`,
+}
+
+function mergeRestPaths(paths?: Partial<RestDatasourceManagerPaths>): RestDatasourceManagerPaths {
+  return { ...defaultRestPaths, ...paths }
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  if (response.status === 204) return undefined
   try {
-    body = await response.json()
+    return await response.json()
   } catch {
-    body = undefined
+    return undefined
+  }
+}
+
+async function parseResponse<T>(
+  response: Response,
+  options: CreateRestDatasourceManagerOptions,
+): Promise<T> {
+  const body = await readJson(response)
+
+  if (response.ok) {
+    return options.unwrap ? options.unwrap<T>(body, response) : body as T
   }
 
-  const message = body?.message
+  const customError = options.createError?.(response, body)
+  if (customError) throw customError
+
+  const errorBody = body as { message?: string; errors?: string[] } | undefined
+  const message = errorBody?.message
   if (response.status === 401) throw new DatasourceUnauthorizedError(message)
   if (response.status === 403) throw new DatasourceForbiddenError(message)
   if (response.status === 404) throw new DatasourceNotFoundError(message ?? 'unknown')
   if (response.status === 409) throw new DatasourceConflictError(message)
-  if (response.status === 422) throw new DatasourceValidationError(message, body?.errors)
+  if (response.status === 422) throw new DatasourceValidationError(message, errorBody?.errors)
   throw new DatasourceTransportError(message, response.status)
 }
 
@@ -415,6 +464,7 @@ export function createRestDatasourceManager(
 ): DatasourceManagerBackend {
   const fetchImpl = options.fetch ?? fetch
   const baseUrl = options.baseUrl.replace(/\/$/, '')
+  const paths = mergeRestPaths(options.paths)
 
   async function send<T>(
     path: string,
@@ -426,42 +476,42 @@ export function createRestDatasourceManager(
       headers: await requestHeaders(options, context),
       ...(context?.signal ? { signal: context.signal } : {}),
     })
-    return parseResponse<T>(response)
+    return parseResponse<T>(response, options)
   }
 
   return {
     types: {
-      list: (context) => send<DatasourceTypeInfo[]>('/types', { method: 'GET' }, context),
-      get: (type, context) => send<DatasourceTypeInfo>(`/types/${encodeURIComponent(type)}`, { method: 'GET' }, context),
-      install: (type, context) => send<void>(`/types/${encodeURIComponent(type)}/install`, { method: 'POST' }, context),
-      uninstall: (type, context) => send<void>(`/types/${encodeURIComponent(type)}/uninstall`, { method: 'POST' }, context),
-      enable: (type, context) => send<void>(`/types/${encodeURIComponent(type)}/enable`, { method: 'POST' }, context),
-      disable: (type, context) => send<void>(`/types/${encodeURIComponent(type)}/disable`, { method: 'POST' }, context),
+      list: (context) => send<DatasourceTypeInfo[]>(paths.typesList(), { method: 'GET' }, context),
+      get: (type, context) => send<DatasourceTypeInfo>(paths.typeGet(type), { method: 'GET' }, context),
+      install: (type, context) => send<void>(paths.typeAction(type, 'install'), { method: 'POST' }, context),
+      uninstall: (type, context) => send<void>(paths.typeAction(type, 'uninstall'), { method: 'POST' }, context),
+      enable: (type, context) => send<void>(paths.typeAction(type, 'enable'), { method: 'POST' }, context),
+      disable: (type, context) => send<void>(paths.typeAction(type, 'disable'), { method: 'POST' }, context),
     },
     instances: {
-      list: (options, context) => send<DatasourceListResult>(queryString(options), { method: 'GET' }, context),
-      get: (uid, context) => send<DatasourceInstance>(`/${encodeURIComponent(uid)}`, { method: 'GET' }, context),
-      create: (input, context) => send<DatasourceInstance>('', {
+      list: (options, context) => send<DatasourceListResult>(paths.instancesList(queryString(options)), { method: 'GET' }, context),
+      get: (uid, context) => send<DatasourceInstance>(paths.instanceGet(uid), { method: 'GET' }, context),
+      create: (input, context) => send<DatasourceInstance>(paths.instanceCreate(), {
         method: 'POST',
         body: JSON.stringify(input),
       }, context),
-      update: (uid, patch, context) => send<DatasourceInstance>(`/${encodeURIComponent(uid)}`, {
+      update: (uid, patch, context) => send<DatasourceInstance>(paths.instanceUpdate(uid), {
         method: 'PATCH',
         body: JSON.stringify(patch),
       }, context),
-      delete: (uid, context) => send<void>(`/${encodeURIComponent(uid)}`, { method: 'DELETE' }, context),
+      delete: (uid, context) => send<void>(paths.instanceDelete(uid), { method: 'DELETE' }, context),
     },
-    query: (request, context) => send<unknown>('/query', {
+    query: (request, context) => send<unknown>(paths.query(), {
       method: 'POST',
       body: JSON.stringify(request),
     }, context),
-    healthCheck: (uid, context) => send<DatasourceHealthResult>(`/${encodeURIComponent(uid)}/health`, { method: 'GET' }, context),
-    validateQuery: (uid, query, context) => send<DatasourceValidationResult>(`/${encodeURIComponent(uid)}/validate-query`, {
+    healthCheck: (uid, context) => send<DatasourceHealthResult>(paths.healthCheck(uid), { method: 'GET' }, context),
+    validateQuery: (uid, query, context) => send<DatasourceValidationResult>(paths.validateQuery(uid), {
       method: 'POST',
       body: JSON.stringify(query),
     }, context),
-    listNamespaces: (uid, context) => send<DatasourceSchemaNamespace[]>(`/${encodeURIComponent(uid)}/namespaces`, { method: 'GET' }, context),
-    listFields: (uid, request, context) => send<DatasourceSchemaField[]>(`/${encodeURIComponent(uid)}/fields`, {
+    listNamespaces: (uid, context) => send<DatasourceSchemaNamespace[]>(paths.listNamespaces(uid), { method: 'GET' }, context),
+    listFields: (uid, request, context) => send<DatasourceSchemaField[]>(paths.listFields(uid), {
       method: 'POST',
       body: JSON.stringify(request),
     }, context),

@@ -301,7 +301,7 @@ Frontend permission hints are for UI behavior only, such as hiding or disabling 
 
 ## REST Helper
 
-If your backend follows the helper's REST convention, you can use `createRestDatasourceManager` as a backend adapter. If your API paths, auth scheme, or error envelope are different, wire handlers directly with `createDatasourceManager`.
+If your backend follows the helper's REST convention, you can use `createRestDatasourceManager` as a backend adapter. If your API paths, auth scheme, or error envelope are different, customize the helper or wire handlers directly with `createDatasourceManager`.
 
 ```ts
 import {
@@ -317,6 +317,45 @@ const manager = createDatasourceManager({
   }),
 })
 ```
+
+Custom paths and response envelopes:
+
+```ts
+const backend = createRestDatasourceManager({
+  baseUrl: 'https://api.example.com/v1',
+  paths: {
+    typesList: () => '/catalog/datasource-types',
+    typeGet: (type) => `/catalog/datasource-types/${type}`,
+    instancesList: (queryString) => `/connections${queryString}`,
+    query: () => '/query/run',
+  },
+  unwrap: (body) => body.data,
+  createError: (response, body) => {
+    if (response.status === 500) {
+      return new DatasourceTransportError(body.error?.message, response.status)
+    }
+    return undefined
+  },
+})
+```
+
+## Framework And Product Adapters
+
+DatasourceKit does not ship product-specific adapters from the core package. Dashboard, alerting, reporting, or React adapters should live in the consuming package or in a separate optional package.
+
+For example, a dashboard package can map its own panel request type into `DataQuery`:
+
+```ts
+const result = await manager.instances.query({
+  id: panelRequest.id,
+  datasourceUid: panelRequest.uid,
+  datasourceType: panelRequest.type,
+  query: panelRequest.query,
+  options: panelRequest.options,
+}, datasourceContext)
+```
+
+This keeps DatasourceKit focused on the datasource domain contract instead of depending on a specific product runtime.
 
 ## Error Model
 
