@@ -30,9 +30,27 @@ export interface DatasourceCreateInput<TOptions = Record<string, unknown>> {
 
 export type DatasourceUpdateInput<TOptions = Record<string, unknown>> =
   Partial<Omit<DatasourceCreateInput<TOptions>, 'uid' | 'type'>> & {
-    type?: string
     version?: string
   }
+
+export interface DatasourceListFilter {
+  type?: string | string[]
+  enabled?: boolean
+  search?: string
+}
+
+export interface DatasourceListOptions {
+  filter?: DatasourceListFilter
+  page?: number
+  pageSize?: number
+  cursor?: string
+}
+
+export interface DatasourceListResult {
+  items: DatasourceInstance[]
+  total?: number
+  nextCursor?: string
+}
 
 export interface DatasourceManagerContext {
   authToken?: string
@@ -42,7 +60,7 @@ export interface DatasourceManagerContext {
 }
 
 export interface DatasourceManager {
-  list(context?: DatasourceManagerContext): Promise<DatasourceInstance[]>
+  list(options?: DatasourceListOptions, context?: DatasourceManagerContext): Promise<DatasourceListResult>
   get(uid: string, context?: DatasourceManagerContext): Promise<DatasourceInstance>
   create(
     input: DatasourceCreateInput,
@@ -125,8 +143,19 @@ export function createRestDatasourceManager(
   }
 
   return {
-    list(context) {
-      return send<DatasourceInstance[]>('', { method: 'GET' }, context)
+    list(options, context) {
+      const params = new URLSearchParams()
+      if (options?.filter?.type !== undefined) {
+        const types = Array.isArray(options.filter.type) ? options.filter.type : [options.filter.type]
+        for (const t of types) params.append('type', t)
+      }
+      if (options?.filter?.enabled !== undefined) params.set('enabled', String(options.filter.enabled))
+      if (options?.filter?.search !== undefined) params.set('search', options.filter.search)
+      if (options?.page !== undefined) params.set('page', String(options.page))
+      if (options?.pageSize !== undefined) params.set('pageSize', String(options.pageSize))
+      if (options?.cursor !== undefined) params.set('cursor', options.cursor)
+      const qs = params.toString()
+      return send<DatasourceListResult>(qs ? `?${qs}` : '', { method: 'GET' }, context)
     },
 
     get(uid, context) {

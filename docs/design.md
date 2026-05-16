@@ -122,7 +122,7 @@ interface DatasourceRuntime {
   validateQuery(uid, query, context?): Promise<DatasourceValidationResult>
   listNamespaces(uid, context?): Promise<DatasourceSchemaNamespace[]>
   listFields(uid, request, context?): Promise<DatasourceSchemaField[]>
-  metricFindQuery(request, context?): Promise<VariableOption[]>
+  variableQuery(request, context?): Promise<VariableOption[]>
   queryAnnotations(query, context?): Promise<Annotation[]>
 }
 ```

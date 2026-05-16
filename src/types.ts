@@ -85,6 +85,14 @@ export interface AnnotationQuery<TQuery = unknown> {
   color?: string
 }
 
+export type BatchQueryResultItem =
+  | { data: QueryResult; error?: never }
+  | { data?: never; error: Error }
+
+export interface BatchQueryResult {
+  items: BatchQueryResultItem[]
+}
+
 export interface Annotation {
   id?: string
   time: number

@@ -7,6 +7,7 @@ const packageDir = dirname(fileURLToPath(import.meta.url))
 export default defineConfig({
   entry: {
     index: resolve(packageDir, 'src/index.ts'),
+    testing: resolve(packageDir, 'src/testing.ts'),
   },
   outDir: resolve(packageDir, 'dist'),
   tsconfig: resolve(packageDir, 'tsconfig.json'),

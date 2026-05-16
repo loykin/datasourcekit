@@ -2,6 +2,8 @@ import { DatasourceConflictError, DatasourceNotFoundError } from './errors'
 import type {
   DatasourceCreateInput,
   DatasourceInstance,
+  DatasourceListOptions,
+  DatasourceListResult,
   DatasourceManager,
   DatasourceUpdateInput,
 } from './manager'
@@ -16,8 +18,30 @@ export function createMemoryDatasourceManager(
   let store: DatasourceInstance[] = seed.map((d) => ({ ...d }))
 
   return {
-    async list() {
-      return [...store]
+    async list(options?: DatasourceListOptions): Promise<DatasourceListResult> {
+      let items = [...store]
+      const filter = options?.filter
+      if (filter?.type !== undefined) {
+        const types = Array.isArray(filter.type) ? filter.type : [filter.type]
+        items = items.filter((d) => types.includes(d.type))
+      }
+      if (filter?.enabled !== undefined) {
+        items = items.filter((d) => (d.enabled ?? true) === filter.enabled)
+      }
+      if (filter?.search !== undefined) {
+        const q = filter.search.toLowerCase()
+        items = items.filter(
+          (d) => d.name.toLowerCase().includes(q) || d.uid.toLowerCase().includes(q),
+        )
+      }
+      const total = items.length
+      if (options?.page !== undefined && options?.pageSize !== undefined) {
+        const start = options.page * options.pageSize
+        items = items.slice(start, start + options.pageSize)
+      } else if (options?.pageSize !== undefined) {
+        items = items.slice(0, options.pageSize)
+      }
+      return { items, total }
     },
 
     async get(uid) {
@@ -59,7 +83,6 @@ export function createMemoryDatasourceManager(
         ...(patch.options !== undefined ? { options: patch.options } : {}),
         ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
         ...(patch.meta !== undefined ? { meta: patch.meta } : {}),
-        ...(patch.type !== undefined ? { type: patch.type } : {}),
         version: nextVersion(ds.version),
         updatedAt: new Date().toISOString(),
       }

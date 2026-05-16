@@ -2,6 +2,7 @@ import { DatasourceCapabilityError } from './errors'
 import type {
   Annotation,
   AnnotationQuery,
+  BatchQueryResult,
   DataQuery,
   DatasourceHealthResult,
   DatasourceSchemaField,
@@ -19,6 +20,7 @@ export interface QueryCallOptions {
 
 export interface DatasourceRuntime {
   query(request: DataQuery, context?: QueryContext, options?: QueryCallOptions): Promise<QueryResult>
+  batchQuery(requests: DataQuery[], context?: QueryContext, options?: QueryCallOptions): Promise<BatchQueryResult>
   subscribe?: (
     request: DataQuery,
     context: QueryContext,
@@ -38,12 +40,10 @@ export interface DatasourceRuntime {
   queryAnnotations(query: AnnotationQuery, context?: QueryContext): Promise<Annotation[]>
 }
 
-export interface DatasourceRuntimeHandlers {
-  // If query returns unknown, transform must convert it to QueryResult.
-  // If transform is omitted, query must return QueryResult directly.
-  query(request: DataQuery, context?: QueryContext): Promise<unknown>
-  transform?: (raw: unknown, request: DataQuery, context?: QueryContext) => QueryResult | Promise<QueryResult>
-  // subscribe emits raw data — both runtime and call transforms are applied before onData fires.
+type DatasourceRuntimeHandlersBase = {
+  // When provided, the backend handles batching natively.
+  // When omitted, defineDatasourceRuntime falls back to parallel query() calls.
+  batchQuery?: (requests: DataQuery[], context?: QueryContext) => Promise<BatchQueryResult>
   subscribe?: (
     request: DataQuery,
     context: QueryContext,
@@ -62,11 +62,26 @@ export interface DatasourceRuntimeHandlers {
   queryAnnotations?: (query: AnnotationQuery, context?: QueryContext) => Promise<Annotation[]>
 }
 
+// When transform is provided, query may return any backend-specific shape.
+// When transform is omitted, query must return QueryResult directly.
+type DatasourceRuntimeHandlersWithTransform = DatasourceRuntimeHandlersBase & {
+  query(request: DataQuery, context?: QueryContext): Promise<unknown>
+  transform(raw: unknown, request: DataQuery, context?: QueryContext): QueryResult | Promise<QueryResult>
+}
+
+type DatasourceRuntimeHandlersNoTransform = DatasourceRuntimeHandlersBase & {
+  query(request: DataQuery, context?: QueryContext): Promise<QueryResult>
+}
+
+export type DatasourceRuntimeHandlers =
+  | DatasourceRuntimeHandlersWithTransform
+  | DatasourceRuntimeHandlersNoTransform
+
 async function applyTransforms(
   raw: unknown,
   request: DataQuery,
   context: QueryContext | undefined,
-  runtimeTransform: DatasourceRuntimeHandlers['transform'],
+  runtimeTransform: DatasourceRuntimeHandlersWithTransform['transform'] | undefined,
   callTransform: QueryCallOptions['transform'],
 ): Promise<QueryResult> {
   const normalized = runtimeTransform
@@ -76,10 +91,29 @@ async function applyTransforms(
 }
 
 export function defineDatasourceRuntime(handlers: DatasourceRuntimeHandlers): DatasourceRuntime {
+  const runtimeTransform = 'transform' in handlers ? handlers.transform : undefined
+
   const runtime: DatasourceRuntime = {
     async query(request, context, options) {
       const raw = await handlers.query(request, context)
-      return applyTransforms(raw, request, context, handlers.transform, options?.transform)
+      return applyTransforms(raw, request, context, runtimeTransform, options?.transform)
+    },
+
+    async batchQuery(requests, context, options) {
+      if (handlers.batchQuery) {
+        return handlers.batchQuery(requests, context)
+      }
+      const items = await Promise.all(
+        requests.map(async (request) => {
+          try {
+            const data = await runtime.query(request, context, options)
+            return { data }
+          } catch (error) {
+            return { error: error instanceof Error ? error : new Error(String(error)) }
+          }
+        }),
+      )
+      return { items }
     },
 
     async healthCheck(uid, context) {
@@ -117,7 +151,7 @@ export function defineDatasourceRuntime(handlers: DatasourceRuntimeHandlers): Da
     const handlerSubscribe = handlers.subscribe
     runtime.subscribe = (request, context, onData, onError, options) =>
       handlerSubscribe(request, context, async (raw) => {
-        const result = await applyTransforms(raw, request, context, handlers.transform, options?.transform)
+        const result = await applyTransforms(raw, request, context, runtimeTransform, options?.transform)
         onData(result)
       }, onError)
   }

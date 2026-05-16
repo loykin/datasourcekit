@@ -1,7 +1,7 @@
 {
   "name": "@loykin/datasourcekit",
   "version": "0.0.0-dev",
-  "description": "Datasource plugin registry and execution layer for Loykin dashboard, alert, and reporting runtimes",
+  "description": "Contract layer for datasource management and execution in dashboard, alert, and reporting tools",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -11,6 +11,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js",
+      "require": "./dist/testing.cjs"
     }
   },
   "files": [
