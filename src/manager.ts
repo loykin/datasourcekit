@@ -56,80 +56,13 @@ export interface DatasourceManager {
   delete(uid: string, context?: DatasourceManagerContext): Promise<void>
 }
 
-export interface DatasourceManagementClient {
-  reload(context?: DatasourceManagerContext): Promise<DatasourceInstance[]>
-  list(): DatasourceInstance[]
-  get(uid: string): DatasourceInstance | undefined
-  create(input: DatasourceCreateInput, context?: DatasourceManagerContext): Promise<DatasourceInstance>
-  update(uid: string, patch: DatasourceUpdateInput, context?: DatasourceManagerContext): Promise<DatasourceInstance>
-  delete(uid: string, context?: DatasourceManagerContext): Promise<void>
-  subscribe(listener: (instances: DatasourceInstance[]) => void): () => void
-}
-
-export interface CreateDatasourceManagementClientOptions {
-  manager: DatasourceManager
-  initialInstances?: readonly DatasourceInstance[]
+export function defineDatasourceManager(handlers: DatasourceManager): DatasourceManager {
+  return handlers
 }
 
 function nextVersion(current?: string): string {
   const value = Number(current ?? 0)
   return Number.isFinite(value) ? String(value + 1) : String(Date.now())
-}
-
-function notify(
-  listeners: Set<(instances: DatasourceInstance[]) => void>,
-  instances: DatasourceInstance[],
-): void {
-  for (const listener of listeners) listener(instances)
-}
-
-export function createDatasourceManagementClient(
-  options: CreateDatasourceManagementClientOptions,
-): DatasourceManagementClient {
-  let instances = [...(options.initialInstances ?? [])]
-  const listeners = new Set<(instances: DatasourceInstance[]) => void>()
-
-  function setInstances(next: DatasourceInstance[]): DatasourceInstance[] {
-    instances = next
-    notify(listeners, instances)
-    return instances
-  }
-
-  return {
-    async reload(context) {
-      return setInstances(await options.manager.list(context))
-    },
-
-    list() {
-      return [...instances]
-    },
-
-    get(uid) {
-      return instances.find((instance) => instance.uid === uid)
-    },
-
-    async create(input, context) {
-      const created = await options.manager.create(input, context)
-      setInstances([...instances.filter((instance) => instance.uid !== created.uid), created])
-      return created
-    },
-
-    async update(uid, patch, context) {
-      const updated = await options.manager.update(uid, patch, context)
-      setInstances(instances.map((instance) => instance.uid === uid ? updated : instance))
-      return updated
-    },
-
-    async delete(uid, context) {
-      await options.manager.delete(uid, context)
-      setInstances(instances.filter((instance) => instance.uid !== uid))
-    },
-
-    subscribe(listener) {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
 }
 
 export function createMemoryDatasourceManager(
@@ -192,7 +125,7 @@ export function createMemoryDatasourceManager(
   }
 }
 
-export interface CreateHttpDatasourceManagerOptions {
+export interface CreateRestDatasourceManagerOptions {
   baseUrl: string
   fetch?: typeof fetch
   getHeaders?: (
@@ -223,7 +156,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 async function requestHeaders(
-  options: CreateHttpDatasourceManagerOptions,
+  options: CreateRestDatasourceManagerOptions,
   context?: DatasourceManagerContext,
 ): Promise<HeadersInit> {
   const headers = {
@@ -237,8 +170,8 @@ async function requestHeaders(
   }
 }
 
-export function createHttpDatasourceManager(
-  options: CreateHttpDatasourceManagerOptions,
+export function createRestDatasourceManager(
+  options: CreateRestDatasourceManagerOptions,
 ): DatasourceManager {
   const fetchImpl = options.fetch ?? fetch
   const baseUrl = options.baseUrl.replace(/\/$/, '')

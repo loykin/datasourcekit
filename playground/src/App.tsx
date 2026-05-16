@@ -1,236 +1,155 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   createDatasourceExecutor,
   createDatasourceRegistry,
   defineDatasource,
-  type Annotation,
+  defineDatasourceManager,
+  defineDatasourceRuntime,
+  DatasourceConflictError,
+  DatasourceForbiddenError,
+  DatasourceNotFoundError,
+  DatasourceValidationError,
   type DataQuery,
+  type DatasourceCreateInput,
   type DatasourceHealthResult,
-  type DatasourcePluginDef,
-  type DatasourceSchemaField,
+  type DatasourceInstance,
   type DatasourceSchemaNamespace,
-  type DatasourceValidationResult,
-  type QueryContext,
   type QueryResult,
-  type VariableOption,
 } from '@loykin/datasourcekit'
 
-type SalesOptions = {
-  endpoint: string
-  region: string
-  sampleRate: number
-}
+// ---------------------------------------------------------------------------
+// Fake backend
+// ---------------------------------------------------------------------------
 
-type SalesQuery = {
-  metric: 'orders' | 'revenue' | 'countries'
-  country: string
-  limit: number
-  minRevenue: number
-}
+type Scenario = 'none' | 'forbidCreate' | 'forbidDelete' | 'forbidUpdate' | 'conflict'
 
-type LogEntry = {
-  id: number
-  level: 'info' | 'error'
-  message: string
-  detail?: unknown
-}
+function createFakeBackend() {
+  function makeTs() { return new Date().toISOString() }
+  function nextVer(v?: string) { return String(Number(v ?? 0) + 1) }
 
-type TabId = 'quickstart' | 'registry' | 'query' | 'capabilities' | 'authorization' | 'remote'
+  const SEED: DatasourceInstance[] = [
+    { uid: 'postgres-main', type: 'postgres', name: 'Main PostgreSQL', enabled: true, version: '1', createdAt: makeTs(), updatedAt: makeTs() },
+    { uid: 'clickhouse-analytics', type: 'clickhouse', name: 'Analytics ClickHouse', enabled: true, version: '1', createdAt: makeTs(), updatedAt: makeTs() },
+  ]
 
-const tabs: Array<{ id: TabId; label: string }> = [
-  { id: 'quickstart', label: 'Quickstart' },
-  { id: 'registry', label: 'Registry' },
-  { id: 'query', label: 'Query' },
-  { id: 'capabilities', label: 'Capabilities' },
-  { id: 'authorization', label: 'Authorization' },
-  { id: 'remote', label: 'Remote Bridge' },
-]
-
-const countries = ['US', 'KR', 'JP', 'DE', 'FR']
-const datasourceUid = 'sales-demo'
-const datasourceOptions: SalesOptions = {
-  endpoint: 'https://example.internal/sales',
-  region: 'ap-northeast-2',
-  sampleRate: 1,
-}
-
-type SalesDatasourceDef = DatasourcePluginDef<SalesOptions, SalesQuery>
-
-const salesRows = [
-  { orderId: 'A-1001', country: 'US', product: 'Atlas', revenue: 12800, status: 'paid' },
-  { orderId: 'A-1002', country: 'KR', product: 'Beacon', revenue: 9400, status: 'paid' },
-  { orderId: 'A-1003', country: 'JP', product: 'Compass', revenue: 11200, status: 'review' },
-  { orderId: 'A-1004', country: 'DE', product: 'Atlas', revenue: 7600, status: 'paid' },
-  { orderId: 'A-1005', country: 'FR', product: 'Beacon', revenue: 6900, status: 'paid' },
-  { orderId: 'A-1006', country: 'US', product: 'Compass', revenue: 15300, status: 'paid' },
-  { orderId: 'A-1007', country: 'KR', product: 'Atlas', revenue: 18100, status: 'review' },
-]
-
-function querySales(request: DataQuery<SalesQuery>, context: QueryContext & { datasourceOptions: SalesOptions }): QueryResult {
-  const query = request.query ?? { metric: 'orders', country: 'all', limit: 10, minRevenue: 0 }
-  const filtered = salesRows
-    .filter((row) => query.country === 'all' || row.country === query.country)
-    .filter((row) => row.revenue >= query.minRevenue)
-    .slice(0, query.limit)
-
-  if (query.metric === 'countries') {
-    const grouped = countries.map((country) => {
-      const countryRows = filtered.filter((row) => row.country === country)
-      return [country, countryRows.length, countryRows.reduce((sum, row) => sum + row.revenue, 0)]
-    })
-
-    return {
-      columns: [
-        { name: 'country', type: 'string' },
-        { name: 'orders', type: 'number' },
-        { name: 'revenue', type: 'number' },
-      ],
-      rows: grouped,
-      requestId: request.id,
-      meta: { endpoint: context.datasourceOptions.endpoint, region: context.datasourceOptions.region },
-    }
-  }
-
-  if (query.metric === 'revenue') {
-    return {
-      columns: [
-        { name: 'product', type: 'string' },
-        { name: 'revenue', type: 'number' },
-      ],
-      rows: Object.entries(
-        filtered.reduce<Record<string, number>>((acc, row) => {
-          acc[row.product] = (acc[row.product] ?? 0) + row.revenue
-          return acc
-        }, {}),
-      ).map(([product, revenue]) => [product, revenue]),
-      requestId: request.id,
-      meta: { sampleRate: context.datasourceOptions.sampleRate, variables: context.variables ?? {} },
-    }
-  }
+  let store: DatasourceInstance[] = [...SEED]
+  let scenario: Scenario = 'none'
 
   return {
-    columns: [
-      { name: 'orderId', type: 'string' },
-      { name: 'country', type: 'string' },
-      { name: 'product', type: 'string' },
-      { name: 'revenue', type: 'number' },
-      { name: 'status', type: 'string' },
-    ],
-    rows: filtered.map((row) => [row.orderId, row.country, row.product, row.revenue, row.status]),
-    requestId: request.id,
-    meta: { source: 'mock-sales', tenantId: context.authContext?.tenantId },
-  }
-}
+    setScenario(s: Scenario) { scenario = s },
+    reset() { store = SEED.map((d) => ({ ...d })); scenario = 'none' },
+    actorDelete(uid: string) { store = store.filter((d) => d.uid !== uid) },
 
-function createSalesDatasource(options: {
-  uid?: string
-  name?: string
-  datasourceOptions?: SalesOptions
-} = {}): SalesDatasourceDef {
-  const uid = options.uid ?? datasourceUid
-  const datasourceConfig = options.datasourceOptions ?? datasourceOptions
+    async list(): Promise<DatasourceInstance[]> { return [...store] },
 
-  return defineDatasource<SalesOptions, SalesQuery>({
-    uid,
-    type: 'mock-sales',
-    name: options.name ?? 'Mock Sales Datasource',
-    options: datasourceConfig,
-    cacheTtlMs: 30_000,
-  queryData: async (request, context) => querySales(request, context),
-  subscribeData: (request, context, onData) => {
-    let tick = 0
-    const intervalId = window.setInterval(() => {
-      tick += 1
-      const result = querySales(request, context)
-      onData({
-        ...result,
-        rows: result.rows.slice(0, 4).map((row, index) => [...row, tick + index]),
-        columns: [...result.columns, { name: 'tick', type: 'number' }],
-        meta: { ...result.meta, streamTick: tick },
-      })
-    }, 1200)
-
-    return () => window.clearInterval(intervalId)
-  },
-  variable: {
-    metricFindQuery: async (query) => {
-      const keyword = query.toLowerCase()
-      return countries
-        .filter((country) => country.toLowerCase().includes(keyword))
-        .map((country) => ({ label: country, value: country }))
+    async get(uid: string): Promise<DatasourceInstance> {
+      const ds = store.find((d) => d.uid === uid)
+      if (!ds) throw new DatasourceNotFoundError(uid)
+      return ds
     },
-  },
-  editor: {
-    defaultQuery: { metric: 'orders', country: 'all', limit: 5, minRevenue: 0 },
-    validateQuery: (query) => {
-      const candidate = query as Partial<SalesQuery>
-      const errors = [
-        candidate.limit !== undefined && candidate.limit <= 0 ? 'limit must be greater than 0' : undefined,
-        candidate.minRevenue !== undefined && candidate.minRevenue < 0 ? 'minRevenue cannot be negative' : undefined,
-      ].filter((error): error is string => Boolean(error))
 
-      return { valid: errors.length === 0, errors }
+    async create(input: DatasourceCreateInput): Promise<DatasourceInstance> {
+      if (scenario === 'forbidCreate') throw new DatasourceForbiddenError('create not allowed for this tenant')
+      if (!input.name.trim()) throw new DatasourceValidationError('name is required', ['name is required'])
+      const uid = `ds-${Date.now()}`
+      const now = makeTs()
+      const ds: DatasourceInstance = { uid, type: input.type, name: input.name.trim(), enabled: true, version: '1', createdAt: now, updatedAt: now }
+      store = [...store, ds]
+      return ds
     },
-  },
-  connector: {
-    configSchema: {
-      endpoint: { type: 'string', label: 'Endpoint', required: true },
-      region: { type: 'string', label: 'Region', required: true },
-      sampleRate: { type: 'number', label: 'Sample rate', min: 0, max: 1, step: 0.1 },
-    },
-    healthCheck: async (options) => ({
-      ok: options.endpoint.startsWith('https://'),
-      message: options.endpoint.startsWith('https://') ? 'Datasource endpoint is reachable' : 'Endpoint must use HTTPS',
-      details: { endpoint: options.endpoint, region: options.region },
-    }),
-  },
-  schema: {
-    listNamespaces: async () => [
-      { id: 'sales', name: 'Sales', kind: 'database' },
-      { id: 'sales.orders', name: 'Orders', kind: 'table', parentId: 'sales' },
-      { id: 'sales.revenue', name: 'Revenue', kind: 'metric', parentId: 'sales' },
-    ],
-    listFields: async () => [
-      { name: 'orderId', type: 'string', label: 'Order ID' },
-      { name: 'country', type: 'string', label: 'Country' },
-      { name: 'product', type: 'string', label: 'Product' },
-      { name: 'revenue', type: 'number', label: 'Revenue' },
-      { name: 'status', type: 'string', label: 'Status' },
-    ],
-  },
-  annotations: {
-    queryAnnotations: async (annotationQuery) => [
-      {
-        id: 'deploy-2026-05',
-        time: Date.now() - 1000 * 60 * 60 * 6,
-        title: 'Pricing rollout',
-        text: `Annotation query: ${annotationQuery.name ?? annotationQuery.id}`,
-        tags: ['release', 'sales'],
-        color: '#2563eb',
-        source: annotationQuery,
-      },
-    ],
-  },
-  })
-}
 
-function buildContext(role: string): QueryContext {
-  return {
-    variables: { country: 'KR', channel: ['direct', 'partner'] },
-    timeRange: {
-      from: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
-      to: new Date().toISOString(),
+    async update(uid: string, patch: { name?: string; version?: string }): Promise<DatasourceInstance> {
+      if (scenario === 'forbidUpdate') throw new DatasourceForbiddenError('update not allowed')
+      const ds = store.find((d) => d.uid === uid)
+      if (!ds) throw new DatasourceNotFoundError(uid)
+      if (scenario === 'conflict') throw new DatasourceConflictError(`"${uid}" was modified by another actor`)
+      if (patch.version !== undefined && ds.version !== patch.version) {
+        throw new DatasourceConflictError(`"${uid}" version conflict: expected ${patch.version}, got ${ds.version}`)
+      }
+      const updated = { ...ds, ...patch, uid, version: nextVer(ds.version), updatedAt: makeTs() }
+      store = store.map((d) => (d.uid === uid ? updated : d))
+      return updated
     },
-    authContext: {
-      tenantId: 'tenant-demo',
-      subject: { id: 'playground-user', roles: [role] },
+
+    async delete(uid: string): Promise<void> {
+      if (scenario === 'forbidDelete') throw new DatasourceForbiddenError('delete not allowed')
+      const exists = store.some((d) => d.uid === uid)
+      if (!exists) throw new DatasourceNotFoundError(uid)
+      store = store.filter((d) => d.uid !== uid)
+    },
+
+    async query(uid: string): Promise<QueryResult> {
+      const ds = store.find((d) => d.uid === uid)
+      if (!ds) throw new DatasourceNotFoundError(uid)
+      return {
+        columns: [{ name: 'name', type: 'string' }, { name: 'type', type: 'string' }, { name: 'version', type: 'string' }],
+        rows: [[ds.name, ds.type, ds.version ?? '—']],
+        requestId: `req-${Date.now()}`,
+        meta: { uid },
+      }
+    },
+
+    async healthCheck(uid: string): Promise<DatasourceHealthResult> {
+      const ds = store.find((d) => d.uid === uid)
+      if (!ds) throw new DatasourceNotFoundError(uid)
+      return { ok: true, message: `${ds.name} is reachable`, details: { uid, type: ds.type, version: ds.version } }
+    },
+
+    async listNamespaces(uid: string): Promise<DatasourceSchemaNamespace[]> {
+      const ds = store.find((d) => d.uid === uid)
+      if (!ds) throw new DatasourceNotFoundError(uid)
+      return [
+        { id: 'public', name: 'public', kind: 'schema' },
+        { id: 'public.users', name: 'users', kind: 'table', parentId: 'public' },
+        { id: 'public.events', name: 'events', kind: 'table', parentId: 'public' },
+      ]
     },
   }
 }
 
-function formatError(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
-}
+// ---------------------------------------------------------------------------
+// Local runtime — mock sales datasource
+// ---------------------------------------------------------------------------
+
+const salesDatasource = defineDatasource({
+  uid: 'sales-local',
+  type: 'mock-sales',
+  name: 'Mock Sales (local)',
+  options: { region: 'ap-northeast-2' } as Record<string, unknown>,
+  async queryData(request) {
+    const rows = [
+      ['A-1001', 'US', 12800], ['A-1002', 'KR', 9400], ['A-1003', 'JP', 11200],
+    ]
+    return {
+      columns: [{ name: 'orderId', type: 'string' }, { name: 'country', type: 'string' }, { name: 'revenue', type: 'number' }],
+      rows,
+      requestId: request.id,
+      meta: { source: 'local-mock' },
+    }
+  },
+})
+
+const localRegistry = createDatasourceRegistry([salesDatasource])
+const localExecutor = createDatasourceExecutor({ registry: localRegistry })
+
+// ---------------------------------------------------------------------------
+// Shared types
+// ---------------------------------------------------------------------------
+
+type TabId = 'purpose' | 'manager' | 'scenarios' | 'runtime' | 'local'
+type LogEntry = { id: number; level: 'info' | 'error'; message: string; detail?: unknown }
+
+const TABS: Array<{ id: TabId; label: string }> = [
+  { id: 'purpose', label: 'Purpose' },
+  { id: 'manager', label: 'Manager' },
+  { id: 'scenarios', label: 'Scenarios' },
+  { id: 'runtime', label: 'Runtime' },
+  { id: 'local', label: 'Local Runtime' },
+]
+
+// ---------------------------------------------------------------------------
+// Helper components
+// ---------------------------------------------------------------------------
 
 function JsonBlock({ value }: { value: unknown }) {
   return <pre className="json">{JSON.stringify(value, null, 2)}</pre>
@@ -242,24 +161,15 @@ function CodeBlock({ children }: { children: string }) {
 
 function ResultTable({ result }: { result?: QueryResult }) {
   if (!result) return <div className="empty">No result yet</div>
-
   return (
     <div className="tableWrap">
       <table>
         <thead>
-          <tr>
-            {result.columns.map((column) => (
-              <th key={column.name}>{column.name}</th>
-            ))}
-          </tr>
+          <tr>{result.columns.map((c) => <th key={c.name}>{c.name}</th>)}</tr>
         </thead>
         <tbody>
-          {result.rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
-              {row.map((cell, cellIndex) => (
-                <td key={cellIndex}>{String(cell)}</td>
-              ))}
-            </tr>
+          {result.rows.map((row, i) => (
+            <tr key={i}>{row.map((cell, j) => <td key={j}>{String(cell)}</td>)}</tr>
           ))}
         </tbody>
       </table>
@@ -267,352 +177,519 @@ function ResultTable({ result }: { result?: QueryResult }) {
   )
 }
 
+function ErrorBadge({ error }: { error: string }) {
+  return (
+    <div className="errorBadge">
+      <strong>{error}</strong>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<TabId>('quickstart')
-  const [query, setQuery] = useState<SalesQuery>({ metric: 'orders', country: 'all', limit: 5, minRevenue: 0 })
-  const [role, setRole] = useState('analyst')
-  const [result, setResult] = useState<QueryResult>()
-  const [streamResult, setStreamResult] = useState<QueryResult>()
-  const [remotePayload, setRemotePayload] = useState<unknown>()
-  const [health, setHealth] = useState<DatasourceHealthResult>()
-  const [validation, setValidation] = useState<DatasourceValidationResult>()
-  const [namespaces, setNamespaces] = useState<DatasourceSchemaNamespace[]>([])
-  const [fields, setFields] = useState<DatasourceSchemaField[]>([])
-  const [variables, setVariables] = useState<VariableOption[]>([])
-  const [annotations, setAnnotations] = useState<Annotation[]>([])
+  const [tab, setTab] = useState<TabId>('purpose')
   const [logs, setLogs] = useState<LogEntry[]>([])
-  const [isStreaming, setIsStreaming] = useState(false)
-  const [datasourceDefs, setDatasourceDefs] = useState<SalesDatasourceDef[]>(() => [createSalesDatasource()])
-  const [datasourceDraft, setDatasourceDraft] = useState({
-    name: 'Mock Sales Datasource',
-    endpoint: datasourceOptions.endpoint,
-    region: datasourceOptions.region,
-    sampleRate: datasourceOptions.sampleRate,
+
+  // manager state
+  const [instances, setInstances] = useState<DatasourceInstance[]>([])
+  const [createName, setCreateName] = useState('')
+  const [createType, setCreateType] = useState('postgres')
+  const [selectedUid, setSelectedUid] = useState<string>('')
+
+  // runtime state
+  const [queryResult, setQueryResult] = useState<QueryResult | undefined>()
+  const [health, setHealth] = useState<DatasourceHealthResult | undefined>()
+  const [namespaces, setNamespaces] = useState<DatasourceSchemaNamespace[]>([])
+  const [runtimeUid, setRuntimeUid] = useState('postgres-main')
+
+  // local runtime state
+  const [localResult, setLocalResult] = useState<QueryResult | undefined>()
+
+  const [cardErrors, setCardErrors] = useState<Record<string, string>>({})
+
+  function setCardError(key: string, msg: string) {
+    setCardErrors((prev) => ({ ...prev, [key]: msg }))
+  }
+  function clearCardErrors() {
+    setCardErrors({})
+  }
+
+  const backendRef = useRef(createFakeBackend())
+  const backend = backendRef.current
+
+  const manager = defineDatasourceManager({
+    list: () => backend.list(),
+    get: (uid) => backend.get(uid),
+    create: (input) => backend.create(input),
+    update: (uid, patch) => backend.update(uid, patch),
+    delete: (uid) => backend.delete(uid),
   })
-  const unsubscribeRef = useRef<(() => void) | undefined>(undefined)
 
-  const registry = useMemo(
-    () => createDatasourceRegistry(datasourceDefs as unknown as DatasourcePluginDef[]),
-    [datasourceDefs],
-  )
-
-  const executor = useMemo(
-    () =>
-      createDatasourceExecutor({
-        registry,
-        authorize: (request) => {
-          const roles = request.context.authContext?.subject?.roles ?? []
-          if (request.action === 'datasource:subscribe' && !roles.includes('analyst') && !roles.includes('admin')) {
-            return { allowed: false, reason: 'Subscribe requires analyst or admin role' }
-          }
-          return true
-        },
-      }),
-    [registry],
-  )
-
-  const context = useMemo(() => buildContext(role), [role])
-  const request = useMemo<DataQuery<SalesQuery>>(
-    () => ({
-      id: `query-${query.metric}`,
-      datasourceUid,
-      datasourceType: 'mock-sales',
-      query,
-      cacheTtlMs: 30_000,
-    }),
-    [query],
-  )
-  const showQueryInput = activeTab === 'query' || activeTab === 'capabilities' || activeTab === 'authorization' || activeTab === 'remote'
+  const runtime = defineDatasourceRuntime({
+    query: (request) => backend.query(request.datasourceUid),
+    healthCheck: (uid) => backend.healthCheck(uid),
+    validateQuery: async () => ({ valid: true }),
+    listNamespaces: (uid) => backend.listNamespaces(uid),
+    listFields: async () => [],
+    metricFindQuery: async () => [],
+    queryAnnotations: async () => [],
+  })
 
   function pushLog(level: LogEntry['level'], message: string, detail?: unknown) {
-    setLogs((current) => [{ id: Date.now() + current.length, level, message, detail }, ...current].slice(0, 8))
+    setLogs((prev) => [{ id: Date.now() + prev.length, level, message, detail }, ...prev].slice(0, 12))
   }
 
-  function draftDatasource(): SalesDatasourceDef {
-    return createSalesDatasource({
-      name: datasourceDraft.name,
-      datasourceOptions: {
-        endpoint: datasourceDraft.endpoint,
-        region: datasourceDraft.region,
-        sampleRate: datasourceDraft.sampleRate,
-      },
-    })
+  function formatError(err: unknown) {
+    return err instanceof Error ? `${err.name}: ${err.message}` : String(err)
   }
 
-  function registrySalesDatasources(): SalesDatasourceDef[] {
-    return registry.list() as unknown as SalesDatasourceDef[]
+  async function refreshList() {
+    const list = await manager.list()
+    setInstances(list)
+    return list
   }
 
-  function registerDatasource() {
-    registry.register(draftDatasource() as unknown as DatasourcePluginDef)
-    setDatasourceDefs(registrySalesDatasources())
-    pushLog('info', 'datasource registered', registry.get(datasourceUid))
-  }
-
-  function updateDatasource() {
+  async function handleList() {
     try {
-      const next = draftDatasource()
-      registry.update(datasourceUid, {
-        name: next.name,
-        options: next.options,
-        cacheTtlMs: next.cacheTtlMs,
-      })
-      setDatasourceDefs(registrySalesDatasources())
-      pushLog('info', 'datasource updated', registry.get(datasourceUid))
-    } catch (error) {
-      pushLog('error', formatError(error))
+      const list = await refreshList()
+      pushLog('info', `manager.list() → ${list.length} datasources`, list.map((d) => d.uid))
+    } catch (err) {
+      pushLog('error', formatError(err))
     }
   }
 
-  function unregisterDatasource() {
-    const removed = registry.unregister(datasourceUid)
-    setDatasourceDefs(registrySalesDatasources())
-    pushLog(removed ? 'info' : 'error', removed ? 'datasource unregistered' : 'datasource was not registered')
-  }
-
-  function clearDatasources() {
-    registry.clear()
-    setDatasourceDefs([])
-    pushLog('info', 'registry cleared')
-  }
-
-  async function runQuery() {
+  async function handleCreate() {
     try {
-      const nextResult = await executor.query(request, context)
-      setResult(nextResult)
-      pushLog('info', 'queryData completed', nextResult.meta)
-    } catch (error) {
-      pushLog('error', formatError(error))
+      const created = await manager.create({ type: createType, name: createName })
+      await refreshList()
+      setCreateName('')
+      pushLog('info', 'manager.create() succeeded', { uid: created.uid, name: created.name })
+    } catch (err) {
+      pushLog('error', formatError(err))
     }
   }
 
-  async function runHealth() {
-    const nextHealth = await executor.healthCheck(datasourceUid, context)
-    setHealth(nextHealth)
-    pushLog('info', 'healthCheck completed', nextHealth)
-  }
-
-  async function runValidation() {
-    const nextValidation = await executor.validateQuery(datasourceUid, query, context)
-    setValidation(nextValidation)
-    pushLog('info', 'validateQuery completed', nextValidation)
-  }
-
-  async function loadSchema() {
-    const [nextNamespaces, nextFields] = await Promise.all([
-      executor.listNamespaces(datasourceUid, context),
-      executor.listFields(datasourceUid, { namespaceId: 'sales.orders' }, context),
-    ])
-    setNamespaces(nextNamespaces)
-    setFields(nextFields)
-    pushLog('info', 'schema loaded', { namespaces: nextNamespaces.length, fields: nextFields.length })
-  }
-
-  async function loadVariables() {
-    const nextVariables = await executor.metricFindQuery({
-      id: 'country-variable',
-      datasourceUid,
-      datasourceType: 'mock-sales',
-      query: query.country === 'all' ? '' : query.country,
-    }, {
-      variables: context.variables,
-      authContext: context.authContext,
-      timeRange: context.timeRange,
-    })
-    setVariables(nextVariables)
-    pushLog('info', 'variable options loaded', nextVariables)
-  }
-
-  async function loadAnnotations() {
-    const nextAnnotations = await executor.queryAnnotations(
-      { id: 'release-events', datasourceUid, name: 'Release events', query: { country: query.country } },
-      context,
-    )
-    setAnnotations(nextAnnotations)
-    pushLog('info', 'annotations loaded', nextAnnotations)
-  }
-
-  async function runRemoteBridge() {
-    const payload = {
-      endpoint: '/api/datasource/query',
-      method: 'POST',
-      body: {
-        request,
-        context,
-      },
-    }
-    setRemotePayload(payload)
-    pushLog('info', 'remote bridge payload prepared', payload)
-  }
-
-  function toggleStream() {
-    if (unsubscribeRef.current) {
-      unsubscribeRef.current()
-      unsubscribeRef.current = undefined
-      setIsStreaming(false)
-      pushLog('info', 'subscription stopped')
-      return
-    }
-
+  async function handleDelete(uid: string) {
     try {
-      unsubscribeRef.current = executor.subscribe(
-        request,
-        context,
-        (nextResult) => {
-          setStreamResult(nextResult)
-          setIsStreaming(true)
-        },
-        (error) => {
-          setIsStreaming(false)
-          pushLog('error', formatError(error))
-        },
-      )
-      pushLog('info', 'subscription started')
-    } catch (error) {
-      pushLog('error', formatError(error))
+      await manager.delete(uid)
+      await refreshList()
+      pushLog('info', `manager.delete("${uid}") succeeded`)
+    } catch (err) {
+      pushLog('error', formatError(err))
     }
   }
 
-  useEffect(() => {
-    void runQuery()
-    void loadSchema()
-    void runHealth()
-  }, [])
-
-  useEffect(() => {
-    return () => {
-      unsubscribeRef.current?.()
+  async function triggerScenario(cardKey: string, s: Scenario) {
+    backend.setScenario(s)
+    setCardErrors((prev) => ({ ...prev, [cardKey]: '' }))
+    try {
+      if (s === 'forbidCreate') {
+        await manager.create({ type: 'postgres', name: 'New DS' })
+      } else if (s === 'forbidDelete') {
+        const list = await manager.list()
+        if (list[0]) await manager.delete(list[0].uid)
+      } else if (s === 'forbidUpdate') {
+        const list = await manager.list()
+        if (list[0]) await manager.update(list[0].uid, { name: 'Updated' })
+      } else if (s === 'conflict') {
+        const list = await manager.list()
+        if (list[0]) await manager.update(list[0].uid, { name: 'Updated', version: '999' })
+      }
+    } catch (err) {
+      setCardError(cardKey, formatError(err))
+      pushLog('error', formatError(err))
+    } finally {
+      backend.setScenario('none')
     }
-  }, [])
+  }
+
+  async function triggerActorDelete() {
+    const list = await manager.list()
+    const target = list[0]
+    if (!target) { pushLog('error', 'no datasources to delete'); return }
+    backend.actorDelete(target.uid)
+    pushLog('info', `another actor deleted "${target.uid}" on the server`)
+    setCardErrors((prev) => ({ ...prev, actorDelete: '' }))
+    try {
+      await manager.get(target.uid)
+    } catch (err) {
+      setCardError('actorDelete', formatError(err))
+      pushLog('error', formatError(err))
+    }
+  }
+
+  function resetScenario() {
+    backend.reset()
+    clearCardErrors()
+    setInstances([])
+    pushLog('info', 'backend reset to initial state')
+  }
+
+  async function runRuntimeQuery() {
+    try {
+      const result = await runtime.query({ id: `q-${Date.now()}`, datasourceUid: runtimeUid })
+      setQueryResult(result)
+      pushLog('info', `runtime.query("${runtimeUid}") succeeded`, result.meta)
+    } catch (err) {
+      pushLog('error', formatError(err))
+    }
+  }
+
+  async function runHealthCheck() {
+    try {
+      const result = await runtime.healthCheck(runtimeUid)
+      setHealth(result)
+      pushLog('info', `runtime.healthCheck("${runtimeUid}") → ${result.ok ? 'ok' : 'fail'}`, result)
+    } catch (err) {
+      pushLog('error', formatError(err))
+    }
+  }
+
+  async function runListNamespaces() {
+    try {
+      const result = await runtime.listNamespaces(runtimeUid)
+      setNamespaces(result)
+      pushLog('info', `runtime.listNamespaces("${runtimeUid}") → ${result.length} namespaces`)
+    } catch (err) {
+      pushLog('error', formatError(err))
+    }
+  }
+
+  async function runLocalQuery() {
+    try {
+      const req: DataQuery = { id: 'local-q', datasourceUid: 'sales-local', datasourceType: 'mock-sales' }
+      const result = await localExecutor.query(req)
+      setLocalResult(result)
+      pushLog('info', 'local executor.query() succeeded', result.meta)
+    } catch (err) {
+      pushLog('error', formatError(err))
+    }
+  }
+
+  const hasQueryInput = tab === 'manager' || tab === 'runtime'
 
   return (
     <main className="appShell">
       <header className="topBar">
         <div>
           <h1>DatasourceKit Playground</h1>
-          <p>Registry, executor, datasource capabilities, and app-owned remote bridge patterns.</p>
-        </div>
-        <div className="statusPill">
-          <span className={isStreaming ? 'dot live' : 'dot'} />
-          {isStreaming ? 'Streaming' : 'Idle'}
+          <p>Backend is source of truth. DatasourceKit is the contract layer.</p>
         </div>
       </header>
 
-      <nav className="tabBar" aria-label="DatasourceKit sections">
-        {tabs.map((tab) => (
-          <button
-            className={activeTab === tab.id ? 'active' : ''}
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            type="button"
-          >
-            {tab.label}
+      <nav className="tabBar" aria-label="sections">
+        {TABS.map((t) => (
+          <button key={t.id} className={tab === t.id ? 'active' : ''} onClick={() => setTab(t.id)} type="button">
+            {t.label}
           </button>
         ))}
       </nav>
 
-      <section className={showQueryInput ? 'workspace' : 'workspace noQueryInput'}>
-        {showQueryInput ? (
+      <section className={hasQueryInput ? 'workspace' : 'workspace noQueryInput'}>
+
+        {/* ---------------------------------------------------------------- */}
+        {/* LEFT PANEL (manager / runtime tabs only)                          */}
+        {/* ---------------------------------------------------------------- */}
+
+        {tab === 'manager' ? (
           <aside className="panel controls">
             <div className="panelHeader">
-              <h2>DataQuery & Context</h2>
-              <span>{datasourceUid}</span>
+              <h2>Create Datasource</h2>
             </div>
-
             <label>
-              Metric
-              <select value={query.metric} onChange={(event) => setQuery({ ...query, metric: event.target.value as SalesQuery['metric'] })}>
-                <option value="orders">Orders</option>
-                <option value="revenue">Revenue</option>
-                <option value="countries">Countries</option>
+              Name
+              <input value={createName} onChange={(e) => setCreateName(e.target.value)} placeholder="My Datasource" />
+            </label>
+            <label>
+              Type
+              <select value={createType} onChange={(e) => setCreateType(e.target.value)}>
+                <option value="postgres">postgres</option>
+                <option value="mysql">mysql</option>
+                <option value="clickhouse">clickhouse</option>
+                <option value="redis">redis</option>
               </select>
             </label>
+            <button className="primary" onClick={handleCreate} disabled={!createName.trim()}>
+              manager.create()
+            </button>
 
-            <label>
-              Country
-              <select value={query.country} onChange={(event) => setQuery({ ...query, country: event.target.value })}>
-                <option value="all">All</option>
-                {countries.map((country) => (
-                  <option key={country} value={country}>
-                    {country}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              Limit
-              <input
-                type="number"
-                min="1"
-                value={query.limit}
-                onChange={(event) => setQuery({ ...query, limit: Number(event.target.value) })}
-              />
-            </label>
-
-            <label>
-              Minimum revenue
-              <input
-                type="number"
-                min="0"
-                step="100"
-                value={query.minRevenue}
-                onChange={(event) => setQuery({ ...query, minRevenue: Number(event.target.value) })}
-              />
-            </label>
-
-            <label>
-              Role
-              <select value={role} onChange={(event) => setRole(event.target.value)}>
-                <option value="analyst">analyst</option>
-                <option value="viewer">viewer</option>
-                <option value="admin">admin</option>
-              </select>
-            </label>
-
-            <div className="jsonPanel">
-              <h3>DataQuery</h3>
-              <JsonBlock value={request} />
+            <div className="panelHeader" style={{ marginTop: 16 }}>
+              <h2>Loaded</h2>
+              <span>{instances.length} datasources</span>
             </div>
+            <div className="schemaList">
+              {instances.length === 0
+                ? <div style={{ color: '#64748b', fontSize: 13 }}>Call list() to load</div>
+                : instances.map((ds) => (
+                  <div key={ds.uid} style={{ cursor: 'pointer', outline: selectedUid === ds.uid ? '2px solid #0f766e' : undefined }}
+                    onClick={() => setSelectedUid(ds.uid)}>
+                    <strong>{ds.name}</strong>
+                    <span>{ds.uid} / {ds.type}</span>
+                    <small>version {ds.version ?? '—'}</small>
+                  </div>
+                ))
+              }
+            </div>
+            {selectedUid && (
+              <button className="danger" onClick={() => handleDelete(selectedUid)}>
+                manager.delete("{selectedUid}")
+              </button>
+            )}
+          </aside>
+        ) : null}
 
-            <div className="jsonPanel">
-              <h3>QueryContext</h3>
-              <JsonBlock value={context} />
+        {tab === 'runtime' ? (
+          <aside className="panel controls">
+            <div className="panelHeader">
+              <h2>Datasource UID</h2>
+            </div>
+            <label>
+              uid
+              <input value={runtimeUid} onChange={(e) => setRuntimeUid(e.target.value)} placeholder="postgres-main" />
+            </label>
+            <div style={{ display: 'grid', gap: 8, marginTop: 4 }}>
+              <button className="primary" onClick={runRuntimeQuery}>runtime.query()</button>
+              <button onClick={runHealthCheck}>runtime.healthCheck()</button>
+              <button onClick={runListNamespaces}>runtime.listNamespaces()</button>
+            </div>
+            <div className="panelHeader" style={{ marginTop: 16 }}>
+              <h2>Health</h2>
+            </div>
+            {health
+              ? <div className="schemaList"><div><strong>{health.ok ? 'OK' : 'FAIL'}</strong><span>{health.message}</span></div></div>
+              : <div style={{ color: '#64748b', fontSize: 13 }}>run healthCheck()</div>
+            }
+            <div className="panelHeader" style={{ marginTop: 16 }}>
+              <h2>Namespaces</h2>
+              <span>{namespaces.length}</span>
+            </div>
+            <div className="schemaList">
+              {namespaces.map((ns) => (
+                <div key={ns.id}><strong>{ns.name}</strong><span>{ns.kind}</span></div>
+              ))}
             </div>
           </aside>
         ) : null}
 
+        {/* ---------------------------------------------------------------- */}
+        {/* CENTER CONTENT                                                    */}
+        {/* ---------------------------------------------------------------- */}
+
         <section className="content">
-          {activeTab === 'quickstart' ? (
+
+          {/* PURPOSE */}
+          {tab === 'purpose' ? (
             <>
               <article className="panel infoPanel">
-                <div className="panelHeader">
-                  <h2>Quickstart</h2>
-                  <span>register / execute / result</span>
-                </div>
+                <div className="panelHeader"><h2>What DatasourceKit is</h2></div>
                 <div className="explainGrid">
                   <div>
-                    <strong>1. Define</strong>
-                    <p>Create a datasource plugin. The plugin owns how queryData reaches a database, API, SDK, or app backend.</p>
+                    <strong>Backend owns truth</strong>
+                    <p>Datasource list, state, secrets, and permissions live on the backend. DatasourceKit never pretends to own them.</p>
                   </div>
                   <div>
-                    <strong>2. Register</strong>
-                    <p>Put datasource plugins into a registry. Runtime management can add, update, delete, or clear datasources.</p>
+                    <strong>Manager contract</strong>
+                    <p>Apps wire their own backend handlers into <code>defineDatasourceManager</code>. DatasourceKit provides the contract, not the store.</p>
                   </div>
                   <div>
-                    <strong>3. Execute</strong>
-                    <p>Executor receives DataQuery and QueryContext, resolves the datasource, checks policy, and returns QueryResult.</p>
+                    <strong>Runtime contract</strong>
+                    <p>Query, schema, health, validation run through <code>defineDatasourceRuntime</code> handlers that delegate to the backend.</p>
                   </div>
                 </div>
               </article>
 
+              <article className="panel infoPanel">
+                <div className="panelHeader"><h2>Architecture</h2></div>
+                <CodeBlock>{`Frontend / dashboard / editor
+  -> DatasourceKit contracts
+      -> app backend
+          -> datasource storage, secrets, permissions, query execution`}</CodeBlock>
+              </article>
+
+              <article className="panel infoPanel">
+                <div className="panelHeader"><h2>What DatasourceKit is not</h2></div>
+                <div className="explainGrid">
+                  <div>
+                    <strong>Not a backend</strong>
+                    <p>DatasourceKit does not store datasources, execute queries, or hold secrets. Your backend does.</p>
+                  </div>
+                  <div>
+                    <strong>Not a state store</strong>
+                    <p>DatasourceKit core does not cache or subscribe to datasource state. Use your app's own UI state or server-state tool.</p>
+                  </div>
+                  <div>
+                    <strong>Local runtime</strong>
+                    <p>Registry and executor are for local, mock, and plugin development — not for production datasource management.</p>
+                  </div>
+                </div>
+              </article>
+
+              <article className="panel infoPanel">
+                <div className="panelHeader"><h2>Minimal wiring</h2></div>
+                <CodeBlock>{`const manager = defineDatasourceManager({
+  list: (ctx) => backend.listDatasources(ctx),
+  get: (uid, ctx) => backend.getDatasource(uid, ctx),
+  create: (input, ctx) => backend.createDatasource(input, ctx),
+  update: (uid, patch, ctx) => backend.updateDatasource(uid, patch, ctx),
+  delete: (uid, ctx) => backend.deleteDatasource(uid, ctx),
+})
+
+const runtime = defineDatasourceRuntime({
+  query: (request, ctx) => backend.queryDatasource(request, ctx),
+  healthCheck: (uid, ctx) => backend.healthCheckDatasource(uid, ctx),
+  validateQuery: (uid, query, ctx) => backend.validateDatasourceQuery(uid, query, ctx),
+  listNamespaces: (uid, ctx) => backend.listDatasourceNamespaces(uid, ctx),
+  listFields: (uid, request, ctx) => backend.listDatasourceFields(uid, request, ctx),
+})`}</CodeBlock>
+              </article>
+            </>
+          ) : null}
+
+          {/* MANAGER */}
+          {tab === 'manager' ? (
+            <>
+              <article className="panel infoPanel">
+                <div className="panelHeader"><h2>Manager Contract</h2><span>defineDatasourceManager</span></div>
+                <p className="leadText">
+                  The manager wires your backend handlers into a typed CRUD contract.
+                  DatasourceKit provides the interface — your backend owns the state.
+                </p>
+                <CodeBlock>{`const manager = defineDatasourceManager({
+  list: (ctx) => backend.listDatasources(ctx),
+  get: (uid, ctx) => backend.getDatasource(uid, ctx),
+  create: (input, ctx) => backend.createDatasource(input, ctx),
+  update: (uid, patch, ctx) => backend.updateDatasource(uid, patch, ctx),
+  delete: (uid, ctx) => backend.deleteDatasource(uid, ctx),
+})`}</CodeBlock>
+              </article>
+
+              <article className="panel executePanel">
+                <div className="panelHeader"><h2>Try Manager</h2></div>
+                <div className="buttonGrid compact">
+                  <button className="primary" onClick={handleList}>manager.list()</button>
+                </div>
+              </article>
+            </>
+          ) : null}
+
+          {/* SCENARIOS */}
+          {tab === 'scenarios' ? (
+            <>
+              <article className="panel infoPanel">
+                <div className="panelHeader"><h2>Backend Scenarios</h2></div>
+                <p className="leadText">
+                  Deleted, forbidden, conflict, and validation states are normal operating flows.
+                  DatasourceKit surfaces them as typed errors so the UI can handle them explicitly.
+                </p>
+              </article>
+
+              <div className="splitGrid">
+                <article className="panel infoPanel">
+                  <div className="panelHeader"><h2>Forbidden Create</h2></div>
+                  <p className="leadText">Backend rejects create due to tenant permissions. Expected: show permission error, disable create.</p>
+                  <CodeBlock>{`// DatasourceForbiddenError
+// -> disable action or show permission error`}</CodeBlock>
+                  {cardErrors['forbidCreate'] && <ErrorBadge error={cardErrors['forbidCreate']} />}
+                  <div style={{ marginTop: 12 }}>
+                    <button onClick={() => triggerScenario('forbidCreate', 'forbidCreate')}>Trigger</button>
+                  </div>
+                </article>
+
+                <article className="panel infoPanel">
+                  <div className="panelHeader"><h2>Another Actor Deletes</h2></div>
+                  <p className="leadText">Another user deletes a datasource on the server. Subsequent get returns NotFoundError. Expected: clear selection, reload list.</p>
+                  <CodeBlock>{`// DatasourceNotFoundError
+// -> clear selected datasource or reload list`}</CodeBlock>
+                  {cardErrors['actorDelete'] && <ErrorBadge error={cardErrors['actorDelete']} />}
+                  <div style={{ marginTop: 12 }}>
+                    <button onClick={triggerActorDelete}>Trigger</button>
+                  </div>
+                </article>
+
+                <article className="panel infoPanel">
+                  <div className="panelHeader"><h2>Update Conflict</h2></div>
+                  <p className="leadText">Backend detects stale version on update. Expected: reload latest datasource, ask user to retry.</p>
+                  <CodeBlock>{`// DatasourceConflictError
+// -> reload datasource, ask user to retry`}</CodeBlock>
+                  {cardErrors['conflict'] && <ErrorBadge error={cardErrors['conflict']} />}
+                  <div style={{ marginTop: 12 }}>
+                    <button onClick={() => triggerScenario('conflict', 'conflict')}>Trigger</button>
+                  </div>
+                </article>
+
+                <article className="panel infoPanel">
+                  <div className="panelHeader"><h2>Validation Failure</h2></div>
+                  <p className="leadText">Backend rejects create due to invalid input. Expected: show field-level errors, do not clear form.</p>
+                  <CodeBlock>{`// DatasourceValidationError
+// -> show field errors, keep form state`}</CodeBlock>
+                  {cardErrors['validation'] && <ErrorBadge error={cardErrors['validation']} />}
+                  <div style={{ marginTop: 12 }}>
+                    <button onClick={async () => {
+                      setCardErrors((prev) => ({ ...prev, validation: '' }))
+                      try {
+                        await manager.create({ type: 'postgres', name: '' })
+                      } catch (err) {
+                        const msg = err instanceof DatasourceValidationError
+                          ? `${err.name}: ${err.message}${err.errors ? ' — ' + err.errors.join(', ') : ''}`
+                          : String(err)
+                        setCardError('validation', msg)
+                        pushLog('error', msg)
+                      }
+                    }}>Trigger</button>
+                  </div>
+                </article>
+              </div>
+
+              <article className="panel executePanel">
+                <div className="panelHeader"><h2>Reset Backend</h2></div>
+                <div className="buttonGrid compact">
+                  <button onClick={resetScenario}>Reset to initial state</button>
+                </div>
+              </article>
+            </>
+          ) : null}
+
+          {/* RUNTIME */}
+          {tab === 'runtime' ? (
+            <>
+              <article className="panel infoPanel">
+                <div className="panelHeader"><h2>Runtime Contract</h2><span>defineDatasourceRuntime</span></div>
+                <p className="leadText">
+                  Runtime wires backend execution handlers for query, schema, health, and validation.
+                  In production, these delegate to the backend which loads config, checks permissions, and runs the query.
+                </p>
+                <CodeBlock>{`const runtime = defineDatasourceRuntime({
+  query: (request, ctx) => backend.queryDatasource(request, ctx),
+  healthCheck: (uid, ctx) => backend.healthCheckDatasource(uid, ctx),
+  listNamespaces: (uid, ctx) => backend.listDatasourceNamespaces(uid, ctx),
+  listFields: (uid, request, ctx) => backend.listDatasourceFields(uid, request, ctx),
+})`}</CodeBlock>
+              </article>
+
               <article className="panel">
                 <div className="panelHeader">
-                  <h2>Minimal Usage</h2>
-                  <span>framework independent</span>
+                  <h2>Query Result</h2>
+                  <span>{queryResult?.rows.length ?? 0} rows</span>
                 </div>
+                <ResultTable result={queryResult} />
+              </article>
+            </>
+          ) : null}
+
+          {/* LOCAL RUNTIME */}
+          {tab === 'local' ? (
+            <>
+              <article className="panel infoPanel">
+                <div className="panelHeader"><h2>Local Runtime</h2><span>for mock / local / plugin development</span></div>
+                <p className="leadText">
+                  Registry and executor are local runtime primitives. They are useful for playground demos,
+                  unit tests, local-only apps, and plugin development — not for production datasource management.
+                </p>
                 <CodeBlock>{`const datasource = defineDatasource({
-  uid: 'sales-demo',
+  uid: 'sales-local',
   type: 'mock-sales',
   async queryData(request, context) {
     return runQuery(request.query, context.variables)
@@ -627,360 +704,31 @@ const result = await executor.query(dataQuery, queryContext)`}</CodeBlock>
 
               <article className="panel executePanel">
                 <div className="panelHeader">
-                  <h2>Try It</h2>
-                  <span>{registry.has(datasourceUid) ? 'registered' : 'not registered'}</span>
+                  <h2>Local Executor</h2>
+                  <span>mock-sales datasource</span>
                 </div>
                 <div className="buttonGrid compact">
-                  <button className="primary" onClick={runQuery}>Run Query</button>
+                  <button className="primary" onClick={runLocalQuery}>executor.query()</button>
                 </div>
               </article>
 
               <article className="panel">
                 <div className="panelHeader">
-                  <h2>QueryResult</h2>
-                  <span>{result?.rows.length ?? 0} rows</span>
+                  <h2>Local Result</h2>
+                  <span>{localResult?.rows.length ?? 0} rows</span>
                 </div>
-                <ResultTable result={result} />
+                <ResultTable result={localResult} />
               </article>
             </>
           ) : null}
 
-          {activeTab === 'registry' ? (
-            <>
-              <article className="panel">
-                <div className="panelHeader">
-                  <h2>Registered Datasources</h2>
-                  <span>{registry.list().length} plugin</span>
-                </div>
-                <div className="schemaList">
-                  {registry.list().length === 0 ? (
-                    <div>
-                      <strong>No datasource registered</strong>
-                      <span>Queries fail until a datasource is registered again.</span>
-                    </div>
-                  ) : (
-                    registry.list().map((datasource) => (
-                      <div key={datasource.uid}>
-                        <strong>{datasource.name ?? datasource.uid}</strong>
-                        <span>{datasource.uid} / {datasource.type}</span>
-                        <small>{JSON.stringify(datasource.options ?? {})}</small>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </article>
-
-              <article className="panel controls">
-                <div className="panelHeader">
-                  <h2>Manage Datasource</h2>
-                  <span>register / update / delete</span>
-                </div>
-                <div className="formGrid">
-                  <label>
-                    Name
-                    <input
-                      value={datasourceDraft.name}
-                      onChange={(event) => setDatasourceDraft({ ...datasourceDraft, name: event.target.value })}
-                    />
-                  </label>
-                  <label>
-                    Endpoint
-                    <input
-                      value={datasourceDraft.endpoint}
-                      onChange={(event) => setDatasourceDraft({ ...datasourceDraft, endpoint: event.target.value })}
-                    />
-                  </label>
-                  <label>
-                    Region
-                    <input
-                      value={datasourceDraft.region}
-                      onChange={(event) => setDatasourceDraft({ ...datasourceDraft, region: event.target.value })}
-                    />
-                  </label>
-                  <label>
-                    Sample rate
-                    <input
-                      max="1"
-                      min="0"
-                      step="0.1"
-                      type="number"
-                      value={datasourceDraft.sampleRate}
-                      onChange={(event) => setDatasourceDraft({ ...datasourceDraft, sampleRate: Number(event.target.value) })}
-                    />
-                  </label>
-                </div>
-                <div className="buttonGrid manageActions">
-                  <button className="primary" onClick={registerDatasource}>Register</button>
-                  <button onClick={updateDatasource}>Update</button>
-                  <button className="danger" onClick={unregisterDatasource}>Delete</button>
-                  <button onClick={clearDatasources}>Clear All</button>
-                </div>
-              </article>
-
-              <article className="panel">
-                <div className="panelHeader">
-                  <h2>Management API</h2>
-                  <span>runtime registry</span>
-                </div>
-                <CodeBlock>{`const registry = createDatasourceRegistry([])
-
-registry.register(datasource)
-registry.update('sales-demo', { options: nextOptions })
-registry.unregister('sales-demo')
-registry.clear()
-
-const executor = createDatasourceExecutor({ registry })`}</CodeBlock>
-              </article>
-            </>
-          ) : null}
-
-          {activeTab === 'query' ? (
-            <>
-              <article className="panel executePanel">
-                <div className="panelHeader">
-                  <h2>Executor</h2>
-                  <span>query / stream</span>
-                </div>
-                <div className="buttonGrid">
-                  <button className="primary" onClick={runQuery}>Run Query</button>
-                  <button className={isStreaming ? 'danger' : ''} onClick={toggleStream}>
-                    {isStreaming ? 'Stop Stream' : 'Start Stream'}
-                  </button>
-                </div>
-              </article>
-
-              <div className="summaryGrid">
-                <article className="panel metric">
-                  <span>Rows</span>
-                  <strong>{result?.rows.length ?? 0}</strong>
-                  <small>{result?.requestId ?? 'No request'}</small>
-                </article>
-                <article className="panel metric">
-                  <span>Streaming</span>
-                  <strong>{isStreaming ? 'Live' : 'Idle'}</strong>
-                  <small>{streamResult?.meta?.streamTick ? `tick ${streamResult.meta.streamTick}` : 'No stream data'}</small>
-                </article>
-                <article className="panel metric">
-                  <span>Role</span>
-                  <strong>{role}</strong>
-                  <small>viewer cannot subscribe</small>
-                </article>
-              </div>
-
-              <article className="panel">
-                <div className="panelHeader">
-                  <h2>Query Result</h2>
-                  <span>{result?.columns.length ?? 0} columns</span>
-                </div>
-                <ResultTable result={result} />
-              </article>
-
-              <article className="panel">
-                <div className="panelHeader">
-                  <h2>Stream Result</h2>
-                  <span>{streamResult?.meta?.streamTick ? `tick ${streamResult.meta.streamTick}` : 'not started'}</span>
-                </div>
-                <ResultTable result={streamResult} />
-              </article>
-            </>
-          ) : null}
-
-          {activeTab === 'capabilities' ? (
-            <>
-              <article className="panel executePanel">
-                <div className="panelHeader">
-                  <h2>Datasource Capabilities</h2>
-                  <span>editor / schema / health / variables / annotations</span>
-                </div>
-                <div className="buttonGrid">
-                  <button onClick={runValidation}>Validate Query</button>
-                  <button onClick={runHealth}>Health Check</button>
-                  <button onClick={loadSchema}>Load Schema</button>
-                  <button onClick={loadVariables}>Variable Options</button>
-                  <button onClick={loadAnnotations}>Annotations</button>
-                </div>
-              </article>
-
-              <div className="summaryGrid">
-                <article className="panel metric">
-                  <span>Health</span>
-                  <strong>{health?.ok ? 'OK' : 'Unknown'}</strong>
-                  <small>{health?.message ?? 'Run health check'}</small>
-                </article>
-                <article className="panel metric">
-                  <span>Validation</span>
-                  <strong>{validation ? (validation.valid ? 'Valid' : 'Invalid') : 'Pending'}</strong>
-                  <small>{validation?.errors?.join(', ') || 'No validation errors'}</small>
-                </article>
-                <article className="panel metric">
-                  <span>Schema</span>
-                  <strong>{fields.length}</strong>
-                  <small>{namespaces.length} namespaces</small>
-                </article>
-              </div>
-
-              <div className="splitGrid">
-                <article className="panel">
-                  <div className="panelHeader">
-                    <h2>Schema Browser Data</h2>
-                    <span>{namespaces.length} namespaces</span>
-                  </div>
-                  <div className="schemaList">
-                    {namespaces.map((namespace) => (
-                      <div key={namespace.id}>
-                        <strong>{namespace.name}</strong>
-                        <span>{namespace.kind}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="fieldList">
-                    {fields.map((field) => (
-                      <span key={field.name}>{field.label ?? field.name}</span>
-                    ))}
-                  </div>
-                </article>
-
-                <article className="panel">
-                  <div className="panelHeader">
-                    <h2>Variable Options</h2>
-                    <span>{variables.length} options</span>
-                  </div>
-                  <div className="chipList">
-                    {variables.map((option) => (
-                      <span key={option.value}>{option.label}</span>
-                    ))}
-                  </div>
-                </article>
-
-                <article className="panel">
-                  <div className="panelHeader">
-                    <h2>Annotations</h2>
-                    <span>{annotations.length} events</span>
-                  </div>
-                  <div className="annotationList">
-                    {annotations.map((annotation) => (
-                      <div key={annotation.id}>
-                        <strong>{annotation.title}</strong>
-                        <span>{new Date(annotation.time).toLocaleString()}</span>
-                      </div>
-                    ))}
-                  </div>
-                </article>
-              </div>
-            </>
-          ) : null}
-
-          {activeTab === 'authorization' ? (
-            <>
-              <article className="panel infoPanel">
-                <div className="panelHeader">
-                  <h2>Authorization Hook</h2>
-                  <span>datasource-level policy</span>
-                </div>
-                <p className="leadText">
-                  The executor can enforce datasource policy before calling a plugin. In this demo, query is allowed for
-                  every role, but subscribe is allowed only for analyst and admin.
-                </p>
-              </article>
-
-              <div className="summaryGrid">
-                <article className="panel metric">
-                  <span>Current role</span>
-                  <strong>{role}</strong>
-                  <small>Change it in DataQuery & Context</small>
-                </article>
-                <article className="panel metric">
-                  <span>Query</span>
-                  <strong>Allowed</strong>
-                  <small>datasource:query</small>
-                </article>
-                <article className="panel metric">
-                  <span>Subscribe</span>
-                  <strong>{role === 'viewer' ? 'Denied' : 'Allowed'}</strong>
-                  <small>datasource:subscribe</small>
-                </article>
-              </div>
-
-              <article className="panel executePanel">
-                <div className="panelHeader">
-                  <h2>Try Policy</h2>
-                  <span>viewer should fail streaming</span>
-                </div>
-                <div className="buttonGrid compact">
-                  <button className="primary" onClick={runQuery}>Run Query</button>
-                  <button className={isStreaming ? 'danger' : ''} onClick={toggleStream}>
-                    {isStreaming ? 'Stop Stream' : 'Start Stream'}
-                  </button>
-                </div>
-              </article>
-
-              <article className="panel">
-                <div className="panelHeader">
-                  <h2>Policy Code</h2>
-                  <span>executor option</span>
-                </div>
-                <CodeBlock>{`const executor = createDatasourceExecutor({
-  registry,
-  authorize(request) {
-    const roles = request.context.authContext?.subject?.roles ?? []
-    if (request.action === 'datasource:subscribe') {
-      return roles.includes('analyst') || roles.includes('admin')
-    }
-    return true
-  },
-})`}</CodeBlock>
-              </article>
-            </>
-          ) : null}
-
-          {activeTab === 'remote' ? (
-            <>
-              <article className="panel infoPanel">
-                <div className="panelHeader">
-                  <h2>Remote Bridge</h2>
-                  <span>app-owned backend</span>
-                </div>
-                <p className="leadText">
-                  DatasourceKit is not a backend server. A plugin may call your backend, or an app can expose an adapter
-                  endpoint that receives DataQuery and QueryContext, runs server-side policy, then returns QueryResult.
-                </p>
-                <div className="buttonGrid compact">
-                  <button className="primary" onClick={runRemoteBridge}>Prepare Payload</button>
-                </div>
-              </article>
-
-              <article className="panel">
-                <div className="panelHeader">
-                  <h2>Remote Query Payload</h2>
-                  <span>/api/datasource/query</span>
-                </div>
-                {remotePayload ? <JsonBlock value={remotePayload} /> : <div className="empty">No payload prepared</div>}
-              </article>
-
-              <article className="panel">
-                <div className="panelHeader">
-                  <h2>Client Bridge Example</h2>
-                  <span>custom adapter/plugin</span>
-                </div>
-                <CodeBlock>{`const remoteDatasource = defineDatasource({
-  uid: 'remote-query',
-  type: 'backend',
-  async queryData(request, context) {
-    const response = await fetch('/api/datasource/query', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ request, context }),
-      signal: context.signal,
-    })
-    return response.json()
-  },
-})`}</CodeBlock>
-              </article>
-            </>
-          ) : null}
         </section>
 
-        {showQueryInput ? (
+        {/* ---------------------------------------------------------------- */}
+        {/* RIGHT PANEL — events log                                          */}
+        {/* ---------------------------------------------------------------- */}
+
+        {hasQueryInput ? (
           <aside className="panel inspector">
             <div className="panelHeader">
               <h2>Events</h2>
@@ -996,6 +744,7 @@ const executor = createDatasourceExecutor({ registry })`}</CodeBlock>
             </div>
           </aside>
         ) : null}
+
       </section>
     </main>
   )

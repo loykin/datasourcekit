@@ -1,9 +1,10 @@
 # @loykin/datasourcekit
 
-DatasourceKit is a dashboard-independent datasource registry and execution
-layer. It is intended for dashboards, alerts, reports, query previews, schema
-browsers, backend jobs, and any runtime that needs the same datasource plugin
-contract without depending on DashboardKit.
+DatasourceKit은 datasource 관리 호출과 datasource 실행 호출을 위한 domain 전용 contract다.
+
+DatasourceKit은 백엔드가 아니고, datasource 저장소도 아니며, datasource 상태의 source of truth도 아니다. 백엔드가 source of truth다.
+
+설계 배경과 원칙은 [`docs/design.md`](docs/design.md)를 참조.
 
 ## Install
 
@@ -11,104 +12,99 @@ contract without depending on DashboardKit.
 pnpm add @loykin/datasourcekit
 ```
 
-## Core Contract
+## Manager Contract
 
-DatasourceKit executes `DataQuery` jobs with optional `QueryContext`. Dashboard,
-panel, and layout concepts are not part of the core API. Apps that need tracing
-or product-specific context can pass it through `context.meta`.
+앱 백엔드를 연결하는 기본 방법은 `defineDatasourceManager`다.
 
 ```ts
-import { createDatasourceExecutor, defineDatasource } from '@loykin/datasourcekit'
+import { defineDatasourceManager } from '@loykin/datasourcekit'
+
+const manager = defineDatasourceManager({
+  list: (ctx) => backend.listDatasources(ctx),
+  get: (uid, ctx) => backend.getDatasource(uid, ctx),
+  create: (input, ctx) => backend.createDatasource(input, ctx),
+  update: (uid, patch, ctx) => backend.updateDatasource(uid, patch, ctx),
+  delete: (uid, ctx) => backend.deleteDatasource(uid, ctx),
+})
+
+const datasources = await manager.list()
+```
+
+## Runtime Contract
+
+query, schema, health, validation 실행을 백엔드에 연결하는 방법은 `defineDatasourceRuntime`이다.
+
+```ts
+import { defineDatasourceRuntime } from '@loykin/datasourcekit'
+
+const runtime = defineDatasourceRuntime({
+  query: (request, ctx) => backend.queryDatasource(request, ctx),
+  healthCheck: (uid, ctx) => backend.healthCheckDatasource(uid, ctx),
+  validateQuery: (uid, query, ctx) => backend.validateDatasourceQuery(uid, query, ctx),
+  listNamespaces: (uid, ctx) => backend.listDatasourceNamespaces(uid, ctx),
+  listFields: (uid, request, ctx) => backend.listDatasourceFields(uid, request, ctx),
+})
+
+const result = await runtime.query({ id: 'q1', datasourceUid: 'postgres-main' })
+```
+
+## Error Model
+
+백엔드 또는 local runtime 실패는 domain error로 드러난다.
+
+```ts
+import {
+  DatasourceNotFoundError,
+  DatasourceForbiddenError,
+  DatasourceConflictError,
+  DatasourceValidationError,
+  DatasourceTransportError,
+  DatasourceUnauthorizedError,
+  DatasourceCapabilityError,
+} from '@loykin/datasourcekit'
+```
+
+| Error | 상황 |
+|---|---|
+| `DatasourceNotFoundError` | 삭제되었거나 존재하지 않는 uid |
+| `DatasourceForbiddenError` | 권한이 없는 action |
+| `DatasourceConflictError` | stale update/delete |
+| `DatasourceValidationError` | config 또는 query input validation 실패 |
+| `DatasourceTransportError` | network/backend 실패 |
+| `DatasourceUnauthorizedError` | 인증되지 않은 요청 |
+| `DatasourceCapabilityError` | 지원하지 않는 local runtime capability |
+
+## REST Helper
+
+특정 REST 경로 convention을 사용하는 백엔드라면 `createRestDatasourceManager`를 convenience helper로 쓸 수 있다. 백엔드 URL shape, auth scheme, error envelope이 다르다면 `defineDatasourceManager`로 직접 연결하는 것을 권장한다.
+
+```ts
+import { createRestDatasourceManager } from '@loykin/datasourcekit'
+
+const manager = createRestDatasourceManager({
+  baseUrl: 'https://api.example.com/datasources',
+  getHeaders: () => ({ authorization: `Bearer ${token}` }),
+})
+```
+
+## Local Runtime
+
+registry와 executor는 local runtime primitive다. playground demo, test, local-only app, plugin 개발, mock backend에서 사용한다. production datasource management의 source of truth가 아니다.
+
+```ts
+import { defineDatasource, createDatasourceRegistry, createDatasourceExecutor } from '@loykin/datasourcekit'
 
 const datasource = defineDatasource({
-  uid: 'main-api',
-  type: 'http',
-  options: { baseUrl: 'https://api.example.com' },
-
+  uid: 'my-ds',
+  type: 'custom',
   async queryData(request, context) {
-    const res = await fetch(`${context.datasourceOptions.baseUrl}/query`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        query: request.query,
-        options: request.options,
-        variables: context.variables,
-        timeRange: context.timeRange,
-      }),
-      signal: context.signal,
-    })
-
-    return res.json()
+    return runQuery(request.query, context.variables)
   },
 })
 
-const executor = createDatasourceExecutor({ datasources: [datasource] })
-
-const result = await executor.query(
-  {
-    id: 'orders',
-    datasourceUid: 'main-api',
-    datasourceType: 'http',
-    query: 'orders.list',
-    options: { country: 'KR' },
-  },
-  {
-    variables: { env: 'prod' },
-    timeRange: { from: 'now-1h', to: 'now' },
-    meta: { source: 'report', reportId: 'daily-sales' },
-  },
-)
-```
-
-## Plugin Capabilities
-
-Datasource plugins expose capabilities explicitly:
-
-- `queryData` for one-shot query execution
-- `subscribeData` for streaming query execution
-- `variable.metricFindQuery` for query variable options
-- `schema.listNamespaces` and `schema.listFields` for schema browsing
-- `connector.healthCheck` for datasource health checks
-- `editor.validateQuery` for query editor validation
-- `annotations.queryAnnotations` for annotation lookup
-
-Missing capabilities fail through `DatasourceCapabilityError`. This package
-does not expose the DashboardKit-style query options signature.
-
-```ts
-const options = await executor.metricFindQuery(
-  {
-    id: 'country-variable',
-    datasourceUid: 'main-api',
-    datasourceType: 'http',
-    query: 'country=KR',
-  },
-  {
-    variables: { env: 'prod' },
-    timeRange: { from: 'now-1h', to: 'now' },
-  },
-)
-```
-
-## Authorization
-
-Use the executor `authorize` hook to enforce datasource-level policy across
-products.
-
-```ts
 const executor = createDatasourceExecutor({
   datasources: [datasource],
-  authorize(request) {
-    if (request.action === 'datasource:query') {
-      return { allowed: request.context.authContext?.subject?.roles?.includes('reader') ?? false }
-    }
-    return true
-  },
 })
+
+const result = await executor.query({ id: 'q1', datasourceUid: 'my-ds' })
 ```
-
-## Monorepo Status
-
-DatasourceKit is developed as a workspace package in this repository first. It
-should become a separate repository only when it needs an independent release
-cycle, external datasource plugin ecosystem, or clear non-DashboardKit consumers.

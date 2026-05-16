@@ -421,6 +421,24 @@ tr:last-child td {
   font-size: 11px;
 }
 
+.errorBadge {
+  padding: 12px 14px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff1f2;
+  color: #9f1239;
+  font-size: 13px;
+  font-family: 'Fira Mono', 'Cascadia Code', monospace;
+}
+
+code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  font-size: 12px;
+  font-family: 'Fira Mono', 'Cascadia Code', monospace;
+}
+
 @media (max-width: 1180px) {
   .workspace {
     grid-template-columns: 300px minmax(0, 1fr);
