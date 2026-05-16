@@ -1,58 +1,115 @@
-import { useRef, useState } from 'react'
-import { defineDatasourceManager, defineDatasourceRuntime } from '@loykin/datasourcekit'
+import { useMemo, useRef, useState } from 'react'
+import {
+  createDatasourceManager,
+  defineDatasourcePlugin,
+  type QueryResult,
+} from '@loykin/datasourcekit'
 import { createFakeBackend } from './fakeBackend'
 import { PurposeTab } from './tabs/PurposeTab'
+import { TypesTab } from './tabs/TypesTab'
 import { ManagerTab } from './tabs/ManagerTab'
 import { ScenariosTab } from './tabs/ScenariosTab'
 import { RuntimeTab } from './tabs/RuntimeTab'
+import { CapabilitiesTab } from './tabs/CapabilitiesTab'
 
 const TABS = [
-  { id: 'purpose', label: 'Purpose' },
-  { id: 'manager', label: 'Manager' },
-  { id: 'scenarios', label: 'Scenarios' },
-  { id: 'runtime', label: 'Runtime' },
+  { id: 'overview', label: 'Overview' },
+  { id: 'types', label: 'Types' },
+  { id: 'manager', label: 'Datasources' },
+  { id: 'query', label: 'Query Routing' },
+  { id: 'capabilities', label: 'Capabilities' },
+  { id: 'errors', label: 'Error Flows' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
 
 export default function App() {
-  const [active, setActive] = useState<TabId>('purpose')
+  const [active, setActive] = useState<TabId>('overview')
 
   const backendRef = useRef(createFakeBackend())
   const backend = backendRef.current
 
-  const manager = defineDatasourceManager({
-    list: (options) => backend.list(options),
-    get: (uid) => backend.get(uid),
-    create: (input) => backend.create(input),
-    update: (uid, patch) => backend.update(uid, patch),
-    delete: (uid) => backend.delete(uid),
-  })
+  const manager = useMemo(() => createDatasourceManager({
+    plugins: [
+      defineDatasourcePlugin({
+        type: 'postgres',
+        name: 'PostgreSQL',
+        configEditor: () => null,
+        queryEditor: () => null,
+        backend: {
+          transform: normalizeRawResult,
+        },
+      }),
+      defineDatasourcePlugin({
+        type: 'clickhouse',
+        name: 'ClickHouse',
+        configEditor: () => null,
+        queryEditor: () => null,
+        backend: {
+          transform: normalizeRawResult,
+        },
+      }),
+      defineDatasourcePlugin({
+        type: 'mysql',
+        name: 'MySQL',
+        configEditor: () => null,
+        queryEditor: () => null,
+        backend: {
+          transform: normalizeRawResult,
+        },
+      }),
+      defineDatasourcePlugin({
+        type: 'prometheus',
+        name: 'Prometheus',
+        description: 'Registered frontend plugin, not installed on backend',
+        configEditor: () => null,
+        queryEditor: () => null,
+        backend: {
+          transform: normalizeRawResult,
+        },
+      }),
+    ],
+    backend: {
+      types: {
+        list: () => backend.listTypes(),
+        get: (type) => backend.getType(type),
+        install: (type) => backend.installType(type),
+        uninstall: (type) => backend.uninstallType(type),
+        enable: (type) => backend.enableType(type),
+        disable: (type) => backend.disableType(type),
+      },
+      instances: {
+        list: (options) => backend.list(options),
+        get: (uid) => backend.get(uid),
+        create: (input) => backend.create(input),
+        update: (uid, patch) => backend.update(uid, patch),
+        delete: (uid) => backend.delete(uid),
+      },
+      query: (request) => backend.query(request),
+      healthCheck: (uid) => backend.healthCheck(uid),
+      validateQuery: async () => ({ valid: true }),
+      listNamespaces: (uid) => backend.listNamespaces(uid),
+      listFields: async () => [],
+    },
+  }), [backend])
 
-  const runtime = defineDatasourceRuntime({
-    query: (request) => backend.query(request.datasourceUid),
-    transform: (raw) => {
+  function normalizeRawResult(raw: unknown): QueryResult {
       const r = raw as { fields: string[]; data: unknown[][]; reqId: string; uid: string }
       return {
         columns: r.fields.map((name) => ({ name, type: 'string' })),
         rows: r.data,
         requestId: r.reqId,
-        meta: { uid: r.uid, normalized: true },
+        meta: { uid: r.uid, normalized: true, rawBackendResponse: raw },
       }
-    },
-    healthCheck: (uid) => backend.healthCheck(uid),
-    validateQuery: async () => ({ valid: true }),
-    listNamespaces: (uid) => backend.listNamespaces(uid),
-    listFields: async () => [],
-    variableQuery: async () => [],
-    queryAnnotations: async () => [],
-  })
+  }
 
   const content: Record<TabId, React.ReactNode> = {
-    purpose: <PurposeTab />,
+    overview: <PurposeTab />,
+    types: <TypesTab manager={manager} />,
     manager: <ManagerTab manager={manager} />,
-    scenarios: <ScenariosTab manager={manager} backend={backend} />,
-    runtime: <RuntimeTab runtime={runtime} />,
+    query: <RuntimeTab manager={manager} />,
+    capabilities: <CapabilitiesTab manager={manager} />,
+    errors: <ScenariosTab manager={manager} backend={backend} />,
   }
 
   return (

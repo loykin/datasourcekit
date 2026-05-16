@@ -4,10 +4,12 @@ import {
   DatasourceNotFoundError,
   DatasourceValidationError,
   type DatasourceCreateInput,
+  type DataQuery,
   type DatasourceHealthResult,
   type DatasourceInstance,
   type DatasourceListOptions,
   type DatasourceSchemaNamespace,
+  type DatasourceTypeInfo,
 } from '@loykin/datasourcekit'
 
 export type Scenario = 'none' | 'forbidCreate' | 'forbidDelete' | 'forbidUpdate' | 'conflict'
@@ -22,14 +24,55 @@ const SEED: DatasourceInstance[] = [
   { uid: 'redis-cache', type: 'redis', name: 'Cache Redis', enabled: false, version: '1', createdAt: makeTs(), updatedAt: makeTs() },
 ]
 
+const TYPES: DatasourceTypeInfo[] = [
+  { type: 'postgres', name: 'PostgreSQL', enabled: true, installed: true },
+  { type: 'clickhouse', name: 'ClickHouse', enabled: true, installed: true },
+  { type: 'mysql', name: 'MySQL', enabled: true, installed: true },
+  { type: 'redis', name: 'Redis', enabled: false, installed: true },
+]
+
 export function createFakeBackend() {
   let store: DatasourceInstance[] = SEED.map((d) => ({ ...d }))
+  let types: DatasourceTypeInfo[] = TYPES.map((t) => ({ ...t }))
   let scenario: Scenario = 'none'
 
   return {
     setScenario(s: Scenario) { scenario = s },
-    reset() { store = SEED.map((d) => ({ ...d })); scenario = 'none' },
+    reset() { store = SEED.map((d) => ({ ...d })); types = TYPES.map((t) => ({ ...t })); scenario = 'none' },
     actorDelete(uid: string) { store = store.filter((d) => d.uid !== uid) },
+
+    async listTypes(): Promise<DatasourceTypeInfo[]> {
+      return types
+    },
+
+    async getType(type: string): Promise<DatasourceTypeInfo> {
+      const info = types.find((t) => t.type === type)
+      if (!info) throw new DatasourceNotFoundError(type)
+      return info
+    },
+
+    async installType(type: string): Promise<void> {
+      if (!types.some((t) => t.type === type)) {
+        types = [...types, { type, name: type, installed: true, enabled: false }]
+        return
+      }
+      types = types.map((t) => t.type === type ? { ...t, installed: true } : t)
+    },
+
+    async uninstallType(type: string): Promise<void> {
+      await this.getType(type)
+      types = types.map((t) => t.type === type ? { ...t, installed: false, enabled: false } : t)
+    },
+
+    async enableType(type: string): Promise<void> {
+      await this.getType(type)
+      types = types.map((t) => t.type === type ? { ...t, enabled: true } : t)
+    },
+
+    async disableType(type: string): Promise<void> {
+      await this.getType(type)
+      types = types.map((t) => t.type === type ? { ...t, enabled: false } : t)
+    },
 
     async list(options?: DatasourceListOptions) {
       let items = [...store]
@@ -63,7 +106,16 @@ export function createFakeBackend() {
       if (!input.name.trim()) throw new DatasourceValidationError('name is required', ['name is required'])
       const uid = `ds-${Date.now()}`
       const now = makeTs()
-      const ds: DatasourceInstance = { uid, type: input.type, name: input.name.trim(), enabled: true, version: '1', createdAt: now, updatedAt: now }
+      const ds: DatasourceInstance = {
+        uid,
+        type: input.type,
+        name: input.name.trim(),
+        ...(input.options !== undefined ? { options: input.options } : {}),
+        enabled: true,
+        version: '1',
+        createdAt: now,
+        updatedAt: now,
+      }
       store = [...store, ds]
       return ds
     },
@@ -88,15 +140,18 @@ export function createFakeBackend() {
       store = store.filter((d) => d.uid !== uid)
     },
 
-    async query(uid: string): Promise<unknown> {
-      const ds = store.find((d) => d.uid === uid)
-      if (!ds) throw new DatasourceNotFoundError(uid)
+    async query(request: DataQuery): Promise<unknown> {
+      const ds = store.find((d) => d.uid === request.datasourceUid)
+      if (!ds) throw new DatasourceNotFoundError(request.datasourceUid)
+      const query = request.query && typeof request.query === 'object'
+        ? JSON.stringify(request.query)
+        : String(request.query ?? '')
       return {
         _raw: true,
-        fields: ['name', 'type', 'version'],
-        data: [[ds.name, ds.type, ds.version ?? '—']],
+        fields: ['name', 'type', 'query', 'options'],
+        data: [[ds.name, ds.type, query, JSON.stringify(request.options ?? {})]],
         reqId: `req-${Date.now()}`,
-        uid,
+        uid: ds.uid,
       }
     },
 

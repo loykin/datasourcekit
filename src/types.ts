@@ -23,13 +23,83 @@ export interface DataQuery<TQuery = unknown> {
   meta?: Record<string, unknown>
 }
 
-export interface QueryContext {
+export interface DatasourceContext {
+  authToken?: string
+  headers?: Record<string, string>
+  signal?: AbortSignal
   variables?: Record<string, string | string[]>
   timeRange?: { from: string; to: string; raw?: { from: string; to: string } }
   authContext?: AuthContext
-  signal?: AbortSignal
   builtins?: Record<string, string>
   meta?: Record<string, unknown>
+}
+
+export interface DatasourcePermissionHint {
+  canRead?: boolean
+  canCreate?: boolean
+  canUpdate?: boolean
+  canDelete?: boolean
+  canQuery?: boolean
+  canManage?: boolean
+  reason?: string
+}
+
+export interface DatasourceTypeInfo {
+  type: string
+  name: string
+  description?: string
+  enabled?: boolean
+  installed?: boolean
+  permissions?: DatasourcePermissionHint
+  hasConfigEditor?: boolean
+  hasQueryEditor?: boolean
+  meta?: Record<string, unknown>
+}
+
+export interface DatasourceInstance<TOptions = unknown> {
+  uid: string
+  type: string
+  name: string
+  options?: TOptions
+  enabled?: boolean
+  version?: string
+  createdAt?: string
+  updatedAt?: string
+  permissions?: DatasourcePermissionHint
+  meta?: Record<string, unknown>
+}
+
+export interface DatasourceCreateInput<TOptions = unknown> {
+  uid?: string
+  type: string
+  name: string
+  options?: TOptions
+  enabled?: boolean
+  meta?: Record<string, unknown>
+}
+
+export type DatasourceUpdateInput<TOptions = unknown> =
+  Partial<Omit<DatasourceCreateInput<TOptions>, 'uid' | 'type'>> & {
+    version?: string
+  }
+
+export interface DatasourceListFilter {
+  type?: string | string[]
+  enabled?: boolean
+  search?: string
+}
+
+export interface DatasourceListOptions {
+  filter?: DatasourceListFilter
+  page?: number
+  pageSize?: number
+  cursor?: string
+}
+
+export interface DatasourceListResult {
+  items: DatasourceInstance[]
+  total?: number
+  nextCursor?: string
 }
 
 export interface QueryResult {

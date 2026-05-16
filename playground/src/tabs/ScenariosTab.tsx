@@ -41,34 +41,34 @@ export function ScenariosTab({ manager, backend }: Props) {
 
   async function triggerActorDelete() {
     clearErr('actorDelete')
-    const { items } = await manager.list()
+    const { items } = await manager.instances.list()
     if (!items[0]) {
       setErr('actorDelete', 'no datasources — call list() in the Manager tab first')
       return
     }
     backend.actorDelete(items[0].uid)
     try {
-      await manager.get(items[0].uid)
+      await manager.instances.get(items[0].uid)
     } catch (err) {
       setErr('actorDelete', fmt(err))
     }
   }
 
   async function triggerConflict() {
-    const { items } = await manager.list()
+    const { items } = await manager.instances.list()
     if (!items[0]) {
       setErr('conflict', 'no datasources — call list() in the Manager tab first')
       return
     }
     await trigger('conflict', 'conflict', () =>
-      manager.update(items[0].uid, { name: 'Updated', version: '999' })
+      manager.instances.update(items[0].uid, { name: 'Updated', version: '999' })
     )
   }
 
   async function triggerValidation() {
     clearErr('validation')
     try {
-      await manager.create({ type: 'postgres', name: '' })
+      await manager.instances.create({ type: 'postgres', name: '' })
     } catch (err) {
       if (err instanceof DatasourceValidationError) {
         setErr('validation', `${err.name}: ${err.message}${err.errors ? ' — ' + err.errors.join(', ') : ''}`)
@@ -86,16 +86,24 @@ export function ScenariosTab({ manager, backend }: Props) {
 
   return (
     <div className="max-w-4xl space-y-6">
+      <div className="bg-white border border-gray-200 rounded-lg p-5">
+        <p className="text-sm font-semibold text-gray-900">Backend error flows</p>
+        <p className="text-sm text-gray-500 mt-1">
+          This tab is not another product feature. It shows how DatasourceKit exposes backend-owned failures
+          such as permission denial, stale updates, deleted datasources, and validation errors.
+        </p>
+      </div>
+
       <div className="bg-amber-50 border border-amber-200 rounded-lg px-5 py-3">
         <p className="text-sm text-amber-800">
-          Deleted, forbidden, conflict, and validation states are normal operating flows.
-          DatasourceKit surfaces them as typed errors so the UI can handle them explicitly.
+          These errors are expected operating states. DatasourceKit should surface them as typed errors,
+          and the app UI decides whether to reload, clear selection, disable an action, or keep form state.
         </p>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div className={cardCls}>
-          <p className="text-sm font-semibold text-gray-900">Forbidden Create</p>
+          <p className="text-sm font-semibold text-gray-900">Permission denied</p>
           <p className="text-sm text-gray-500">Backend rejects create due to tenant permissions. Expected: show permission error, disable create.</p>
           <CodeBlock>{`// DatasourceForbiddenError
 // -> disable action or show permission error`}</CodeBlock>
@@ -103,7 +111,7 @@ export function ScenariosTab({ manager, backend }: Props) {
           <button
             className={triggerCls}
             onClick={() => trigger('forbidCreate', 'forbidCreate', () =>
-              manager.create({ type: 'postgres', name: 'New DS' })
+              manager.instances.create({ type: 'postgres', name: 'New DS' })
             )}
           >
             Trigger
@@ -111,7 +119,7 @@ export function ScenariosTab({ manager, backend }: Props) {
         </div>
 
         <div className={cardCls}>
-          <p className="text-sm font-semibold text-gray-900">Another Actor Deletes</p>
+          <p className="text-sm font-semibold text-gray-900">Deleted by another actor</p>
           <p className="text-sm text-gray-500">Another user deletes a datasource. Subsequent get returns NotFoundError. Expected: clear selection, reload list.</p>
           <CodeBlock>{`// DatasourceNotFoundError
 // -> clear selection, reload list`}</CodeBlock>
@@ -120,7 +128,7 @@ export function ScenariosTab({ manager, backend }: Props) {
         </div>
 
         <div className={cardCls}>
-          <p className="text-sm font-semibold text-gray-900">Update Conflict</p>
+          <p className="text-sm font-semibold text-gray-900">Stale update conflict</p>
           <p className="text-sm text-gray-500">Backend detects stale version on update. Expected: reload datasource, ask user to retry.</p>
           <CodeBlock>{`// DatasourceConflictError
 // -> reload datasource, ask user to retry`}</CodeBlock>
@@ -129,7 +137,7 @@ export function ScenariosTab({ manager, backend }: Props) {
         </div>
 
         <div className={cardCls}>
-          <p className="text-sm font-semibold text-gray-900">Validation Failure</p>
+          <p className="text-sm font-semibold text-gray-900">Validation failure</p>
           <p className="text-sm text-gray-500">Backend rejects create due to invalid input. Expected: show field-level errors, keep form state.</p>
           <CodeBlock>{`// DatasourceValidationError
 // -> show field errors, keep form state`}</CodeBlock>

@@ -15,15 +15,16 @@ export function PurposeTab() {
           <p className="text-sm font-semibold text-gray-900 mb-2">Manager contract</p>
           <p className="text-sm text-gray-500">
             Apps wire their own backend handlers into{' '}
-            <code className="text-teal-700 bg-teal-50 px-1 rounded text-xs">defineDatasourceManager</code>.
+            <code className="text-teal-700 bg-teal-50 px-1 rounded text-xs">createDatasourceManager</code>.
             DatasourceKit provides the typed contract, not the store.
           </p>
         </div>
         <div className="bg-white border border-gray-200 rounded-lg p-5">
-          <p className="text-sm font-semibold text-gray-900 mb-2">Runtime contract</p>
+          <p className="text-sm font-semibold text-gray-900 mb-2">Plugin routing</p>
           <p className="text-sm text-gray-500">
-            Query, schema, health, and validation all delegate to the backend through{' '}
-            <code className="text-teal-700 bg-teal-50 px-1 rounded text-xs">defineDatasourceRuntime</code> handlers.
+            Query execution goes through{' '}
+            <code className="text-teal-700 bg-teal-50 px-1 rounded text-xs">manager.instances.query</code>,
+            then each datasource plugin normalizes its own raw response.
           </p>
         </div>
       </div>
@@ -38,20 +39,21 @@ export function PurposeTab() {
 
       <div className="bg-white border border-gray-200 rounded-lg p-5">
         <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Minimal wiring</p>
-        <CodeBlock>{`const manager = defineDatasourceManager({
-  list:   (options, ctx) => backend.listDatasources(options, ctx),
-  get:    (uid, ctx)     => backend.getDatasource(uid, ctx),
-  create: (input, ctx)   => backend.createDatasource(input, ctx),
-  update: (uid, patch, ctx) => backend.updateDatasource(uid, patch, ctx),
-  delete: (uid, ctx)     => backend.deleteDatasource(uid, ctx),
+        <CodeBlock>{`const postgresPlugin = defineDatasourcePlugin({
+  type: 'postgres',
+  name: 'PostgreSQL',
+  backend: {
+    transform: (raw) => normalizePostgresResult(raw),
+  },
 })
 
-const runtime = defineDatasourceRuntime({
-  query:          (request, ctx) => backend.queryDatasource(request, ctx),
-  healthCheck:    (uid, ctx)     => backend.healthCheck(uid, ctx),
-  validateQuery:  (uid, q, ctx)  => backend.validateQuery(uid, q, ctx),
-  listNamespaces: (uid, ctx)     => backend.listNamespaces(uid, ctx),
-  listFields:     (uid, req, ctx) => backend.listFields(uid, req, ctx),
+const manager = createDatasourceManager({
+  plugins: [postgresPlugin],
+  backend: {
+    types: backend.datasourceTypes,
+    instances: backend.datasources,
+    query: (request, ctx) => backend.queryDatasource(request, ctx),
+  },
 })`}</CodeBlock>
       </div>
     </div>
