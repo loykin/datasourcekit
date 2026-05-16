@@ -1,3 +1,4 @@
+import { DatasourceCapabilityError } from './errors'
 import type {
   Annotation,
   AnnotationQuery,
@@ -33,7 +34,7 @@ export interface DatasourceRuntime {
     request: DatasourceSchemaFieldRequest,
     context?: QueryContext,
   ): Promise<DatasourceSchemaField[]>
-  metricFindQuery(request: DataQuery<string>, context?: QueryContext): Promise<VariableOption[]>
+  variableQuery(request: DataQuery<string>, context?: QueryContext): Promise<VariableOption[]>
   queryAnnotations(query: AnnotationQuery, context?: QueryContext): Promise<Annotation[]>
 }
 
@@ -42,22 +43,23 @@ export interface DatasourceRuntimeHandlers {
   // If transform is omitted, query must return QueryResult directly.
   query(request: DataQuery, context?: QueryContext): Promise<unknown>
   transform?: (raw: unknown, request: DataQuery, context?: QueryContext) => QueryResult | Promise<QueryResult>
-  subscribe?(
+  // subscribe emits raw data — both runtime and call transforms are applied before onData fires.
+  subscribe?: (
     request: DataQuery,
     context: QueryContext,
-    onData: (result: QueryResult) => void,
+    onData: (raw: unknown) => void,
     onError: (error: Error) => void,
-  ): () => void
-  healthCheck(uid: string, context?: QueryContext): Promise<DatasourceHealthResult>
-  validateQuery(uid: string, query: unknown, context?: QueryContext): Promise<DatasourceValidationResult>
-  listNamespaces(uid: string, context?: QueryContext): Promise<DatasourceSchemaNamespace[]>
-  listFields(
+  ) => () => void
+  healthCheck?: (uid: string, context?: QueryContext) => Promise<DatasourceHealthResult>
+  validateQuery?: (uid: string, query: unknown, context?: QueryContext) => Promise<DatasourceValidationResult>
+  listNamespaces?: (uid: string, context?: QueryContext) => Promise<DatasourceSchemaNamespace[]>
+  listFields?: (
     uid: string,
     request: DatasourceSchemaFieldRequest,
     context?: QueryContext,
-  ): Promise<DatasourceSchemaField[]>
-  metricFindQuery(request: DataQuery<string>, context?: QueryContext): Promise<VariableOption[]>
-  queryAnnotations(query: AnnotationQuery, context?: QueryContext): Promise<Annotation[]>
+  ) => Promise<DatasourceSchemaField[]>
+  variableQuery?: (request: DataQuery<string>, context?: QueryContext) => Promise<VariableOption[]>
+  queryAnnotations?: (query: AnnotationQuery, context?: QueryContext) => Promise<Annotation[]>
 }
 
 async function applyTransforms(
@@ -79,20 +81,44 @@ export function defineDatasourceRuntime(handlers: DatasourceRuntimeHandlers): Da
       const raw = await handlers.query(request, context)
       return applyTransforms(raw, request, context, handlers.transform, options?.transform)
     },
-    healthCheck: handlers.healthCheck,
-    validateQuery: handlers.validateQuery,
-    listNamespaces: handlers.listNamespaces,
-    listFields: handlers.listFields,
-    metricFindQuery: handlers.metricFindQuery,
-    queryAnnotations: handlers.queryAnnotations,
+
+    async healthCheck(uid, context) {
+      if (!handlers.healthCheck) throw new DatasourceCapabilityError(uid, 'healthCheck')
+      return handlers.healthCheck(uid, context)
+    },
+
+    async validateQuery(uid, query, context) {
+      if (!handlers.validateQuery) throw new DatasourceCapabilityError(uid, 'validateQuery')
+      return handlers.validateQuery(uid, query, context)
+    },
+
+    async listNamespaces(uid, context) {
+      if (!handlers.listNamespaces) throw new DatasourceCapabilityError(uid, 'listNamespaces')
+      return handlers.listNamespaces(uid, context)
+    },
+
+    async listFields(uid, request, context) {
+      if (!handlers.listFields) throw new DatasourceCapabilityError(uid, 'listFields')
+      return handlers.listFields(uid, request, context)
+    },
+
+    async variableQuery(request, context) {
+      if (!handlers.variableQuery) throw new DatasourceCapabilityError(request.datasourceUid, 'variableQuery')
+      return handlers.variableQuery(request, context)
+    },
+
+    async queryAnnotations(query, context) {
+      if (!handlers.queryAnnotations) throw new DatasourceCapabilityError(query.datasourceUid, 'queryAnnotations')
+      return handlers.queryAnnotations(query, context)
+    },
   }
 
   if (handlers.subscribe) {
     const handlerSubscribe = handlers.subscribe
     runtime.subscribe = (request, context, onData, onError, options) =>
-      handlerSubscribe(request, context, async (result) => {
-        const transformed = options?.transform ? await options.transform(result) : result
-        onData(transformed)
+      handlerSubscribe(request, context, async (raw) => {
+        const result = await applyTransforms(raw, request, context, handlers.transform, options?.transform)
+        onData(result)
       }, onError)
   }
 

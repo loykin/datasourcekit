@@ -217,7 +217,7 @@ export default function App() {
     validateQuery: async () => ({ valid: true }),
     listNamespaces: (uid) => backend.listNamespaces(uid),
     listFields: async () => [],
-    metricFindQuery: async () => [],
+    variableQuery: async () => [],
     queryAnnotations: async () => [],
   })
 
