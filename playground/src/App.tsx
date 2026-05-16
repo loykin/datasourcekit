@@ -1,15 +1,11 @@
 import { useRef, useState } from 'react'
 import {
-  createDatasourceExecutor,
-  createDatasourceRegistry,
-  defineDatasource,
   defineDatasourceManager,
   defineDatasourceRuntime,
   DatasourceConflictError,
   DatasourceForbiddenError,
   DatasourceNotFoundError,
   DatasourceValidationError,
-  type DataQuery,
   type DatasourceCreateInput,
   type DatasourceHealthResult,
   type DatasourceInstance,
@@ -78,14 +74,16 @@ function createFakeBackend() {
       store = store.filter((d) => d.uid !== uid)
     },
 
-    async query(uid: string): Promise<QueryResult> {
+    // Raw format — backend's own response shape
+    async query(uid: string): Promise<unknown> {
       const ds = store.find((d) => d.uid === uid)
       if (!ds) throw new DatasourceNotFoundError(uid)
       return {
-        columns: [{ name: 'name', type: 'string' }, { name: 'type', type: 'string' }, { name: 'version', type: 'string' }],
-        rows: [[ds.name, ds.type, ds.version ?? '—']],
-        requestId: `req-${Date.now()}`,
-        meta: { uid },
+        _raw: true,
+        fields: ['name', 'type', 'version'],
+        data: [[ds.name, ds.type, ds.version ?? '—']],
+        reqId: `req-${Date.now()}`,
+        uid,
       }
     },
 
@@ -108,35 +106,10 @@ function createFakeBackend() {
 }
 
 // ---------------------------------------------------------------------------
-// Local runtime — mock sales datasource
-// ---------------------------------------------------------------------------
-
-const salesDatasource = defineDatasource({
-  uid: 'sales-local',
-  type: 'mock-sales',
-  name: 'Mock Sales (local)',
-  options: { region: 'ap-northeast-2' } as Record<string, unknown>,
-  async queryData(request) {
-    const rows = [
-      ['A-1001', 'US', 12800], ['A-1002', 'KR', 9400], ['A-1003', 'JP', 11200],
-    ]
-    return {
-      columns: [{ name: 'orderId', type: 'string' }, { name: 'country', type: 'string' }, { name: 'revenue', type: 'number' }],
-      rows,
-      requestId: request.id,
-      meta: { source: 'local-mock' },
-    }
-  },
-})
-
-const localRegistry = createDatasourceRegistry([salesDatasource])
-const localExecutor = createDatasourceExecutor({ registry: localRegistry })
-
-// ---------------------------------------------------------------------------
 // Shared types
 // ---------------------------------------------------------------------------
 
-type TabId = 'purpose' | 'manager' | 'scenarios' | 'runtime' | 'local'
+type TabId = 'purpose' | 'manager' | 'scenarios' | 'runtime'
 type LogEntry = { id: number; level: 'info' | 'error'; message: string; detail?: unknown }
 
 const TABS: Array<{ id: TabId; label: string }> = [
@@ -144,7 +117,6 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'manager', label: 'Manager' },
   { id: 'scenarios', label: 'Scenarios' },
   { id: 'runtime', label: 'Runtime' },
-  { id: 'local', label: 'Local Runtime' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -204,10 +176,9 @@ export default function App() {
   const [health, setHealth] = useState<DatasourceHealthResult | undefined>()
   const [namespaces, setNamespaces] = useState<DatasourceSchemaNamespace[]>([])
   const [runtimeUid, setRuntimeUid] = useState('postgres-main')
+  const [useCallTransform, setUseCallTransform] = useState(false)
 
-  // local runtime state
-  const [localResult, setLocalResult] = useState<QueryResult | undefined>()
-
+  // per-card scenario errors
   const [cardErrors, setCardErrors] = useState<Record<string, string>>({})
 
   function setCardError(key: string, msg: string) {
@@ -230,6 +201,18 @@ export default function App() {
 
   const runtime = defineDatasourceRuntime({
     query: (request) => backend.query(request.datasourceUid),
+
+    // Runtime transform: normalize backend raw response to QueryResult
+    transform: (raw) => {
+      const r = raw as { fields: string[]; data: unknown[][]; reqId: string; uid: string }
+      return {
+        columns: r.fields.map((name) => ({ name, type: 'string' })),
+        rows: r.data,
+        requestId: r.reqId,
+        meta: { uid: r.uid, normalized: true },
+      }
+    },
+
     healthCheck: (uid) => backend.healthCheck(uid),
     validateQuery: async () => ({ valid: true }),
     listNamespaces: (uid) => backend.listNamespaces(uid),
@@ -330,7 +313,20 @@ export default function App() {
 
   async function runRuntimeQuery() {
     try {
-      const result = await runtime.query({ id: `q-${Date.now()}`, datasourceUid: runtimeUid })
+      const result = await runtime.query(
+        { id: `q-${Date.now()}`, datasourceUid: runtimeUid },
+        undefined,
+        useCallTransform
+          ? {
+              // Call transform: per-panel post-processing (uppercasing column names here)
+              transform: (r) => ({
+                ...r,
+                columns: r.columns.map((c) => ({ ...c, name: c.name.toUpperCase() })),
+                meta: { ...r.meta, callTransformApplied: true },
+              }),
+            }
+          : undefined,
+      )
       setQueryResult(result)
       pushLog('info', `runtime.query("${runtimeUid}") succeeded`, result.meta)
     } catch (err) {
@@ -358,17 +354,6 @@ export default function App() {
     }
   }
 
-  async function runLocalQuery() {
-    try {
-      const req: DataQuery = { id: 'local-q', datasourceUid: 'sales-local', datasourceType: 'mock-sales' }
-      const result = await localExecutor.query(req)
-      setLocalResult(result)
-      pushLog('info', 'local executor.query() succeeded', result.meta)
-    } catch (err) {
-      pushLog('error', formatError(err))
-    }
-  }
-
   const hasQueryInput = tab === 'manager' || tab === 'runtime'
 
   return (
@@ -389,10 +374,6 @@ export default function App() {
       </nav>
 
       <section className={hasQueryInput ? 'workspace' : 'workspace noQueryInput'}>
-
-        {/* ---------------------------------------------------------------- */}
-        {/* LEFT PANEL (manager / runtime tabs only)                          */}
-        {/* ---------------------------------------------------------------- */}
 
         {tab === 'manager' ? (
           <aside className="panel controls">
@@ -424,7 +405,8 @@ export default function App() {
               {instances.length === 0
                 ? <div style={{ color: '#64748b', fontSize: 13 }}>Call list() to load</div>
                 : instances.map((ds) => (
-                  <div key={ds.uid} style={{ cursor: 'pointer', outline: selectedUid === ds.uid ? '2px solid #0f766e' : undefined }}
+                  <div key={ds.uid}
+                    style={{ cursor: 'pointer', outline: selectedUid === ds.uid ? '2px solid #0f766e' : undefined }}
                     onClick={() => setSelectedUid(ds.uid)}>
                     <strong>{ds.name}</strong>
                     <span>{ds.uid} / {ds.type}</span>
@@ -450,6 +432,15 @@ export default function App() {
               uid
               <input value={runtimeUid} onChange={(e) => setRuntimeUid(e.target.value)} placeholder="postgres-main" />
             </label>
+            <label style={{ flexDirection: 'row', alignItems: 'center', gap: 8, display: 'flex', marginTop: 4 }}>
+              <input
+                type="checkbox"
+                style={{ width: 'auto', minHeight: 'auto' }}
+                checked={useCallTransform}
+                onChange={(e) => setUseCallTransform(e.target.checked)}
+              />
+              call transform (uppercase columns)
+            </label>
             <div style={{ display: 'grid', gap: 8, marginTop: 4 }}>
               <button className="primary" onClick={runRuntimeQuery}>runtime.query()</button>
               <button onClick={runHealthCheck}>runtime.healthCheck()</button>
@@ -474,13 +465,8 @@ export default function App() {
           </aside>
         ) : null}
 
-        {/* ---------------------------------------------------------------- */}
-        {/* CENTER CONTENT                                                    */}
-        {/* ---------------------------------------------------------------- */}
-
         <section className="content">
 
-          {/* PURPOSE */}
           {tab === 'purpose' ? (
             <>
               <article className="panel infoPanel">
@@ -492,11 +478,11 @@ export default function App() {
                   </div>
                   <div>
                     <strong>Manager contract</strong>
-                    <p>Apps wire their own backend handlers into <code>defineDatasourceManager</code>. DatasourceKit provides the contract, not the store.</p>
+                    <p>Apps wire their own backend handlers into <code>defineDatasourceManager</code>. DatasourceKit provides the typed contract, not the store.</p>
                   </div>
                   <div>
                     <strong>Runtime contract</strong>
-                    <p>Query, schema, health, validation run through <code>defineDatasourceRuntime</code> handlers that delegate to the backend.</p>
+                    <p>Query, schema, health, validation all delegate to the backend through <code>defineDatasourceRuntime</code> handlers.</p>
                   </div>
                 </div>
               </article>
@@ -507,24 +493,6 @@ export default function App() {
   -> DatasourceKit contracts
       -> app backend
           -> datasource storage, secrets, permissions, query execution`}</CodeBlock>
-              </article>
-
-              <article className="panel infoPanel">
-                <div className="panelHeader"><h2>What DatasourceKit is not</h2></div>
-                <div className="explainGrid">
-                  <div>
-                    <strong>Not a backend</strong>
-                    <p>DatasourceKit does not store datasources, execute queries, or hold secrets. Your backend does.</p>
-                  </div>
-                  <div>
-                    <strong>Not a state store</strong>
-                    <p>DatasourceKit core does not cache or subscribe to datasource state. Use your app's own UI state or server-state tool.</p>
-                  </div>
-                  <div>
-                    <strong>Local runtime</strong>
-                    <p>Registry and executor are for local, mock, and plugin development — not for production datasource management.</p>
-                  </div>
-                </div>
               </article>
 
               <article className="panel infoPanel">
@@ -548,7 +516,6 @@ const runtime = defineDatasourceRuntime({
             </>
           ) : null}
 
-          {/* MANAGER */}
           {tab === 'manager' ? (
             <>
               <article className="panel infoPanel">
@@ -575,7 +542,6 @@ const runtime = defineDatasourceRuntime({
             </>
           ) : null}
 
-          {/* SCENARIOS */}
           {tab === 'scenarios' ? (
             <>
               <article className="panel infoPanel">
@@ -652,81 +618,53 @@ const runtime = defineDatasourceRuntime({
             </>
           ) : null}
 
-          {/* RUNTIME */}
           {tab === 'runtime' ? (
             <>
               <article className="panel infoPanel">
-                <div className="panelHeader"><h2>Runtime Contract</h2><span>defineDatasourceRuntime</span></div>
+                <div className="panelHeader"><h2>Transform Pipeline</h2><span>runtime → call</span></div>
                 <p className="leadText">
-                  Runtime wires backend execution handlers for query, schema, health, and validation.
-                  In production, these delegate to the backend which loads config, checks permissions, and runs the query.
+                  When the backend returns its own format, the runtime transform normalizes it to QueryResult.
+                  Each query call can apply a per-panel transform for additional filtering, renaming, or validation.
                 </p>
-                <CodeBlock>{`const runtime = defineDatasourceRuntime({
-  query: (request, ctx) => backend.queryDatasource(request, ctx),
-  healthCheck: (uid, ctx) => backend.healthCheckDatasource(uid, ctx),
-  listNamespaces: (uid, ctx) => backend.listDatasourceNamespaces(uid, ctx),
-  listFields: (uid, request, ctx) => backend.listDatasourceFields(uid, request, ctx),
+                <CodeBlock>{`// 1. Backend raw response -> QueryResult (runtime-level normalization)
+const runtime = defineDatasourceRuntime({
+  query: (request, ctx) => backend.query(request, ctx), // returns unknown
+  transform: (raw, request) => ({
+    columns: raw.fields.map(name => ({ name, type: 'string' })),
+    rows: raw.data,
+    requestId: raw.reqId,
+  }),
+  ...
+})
+
+// 2. QueryResult -> QueryResult (per-panel post-processing)
+const result = await runtime.query(request, ctx, {
+  transform: (result) => ({
+    ...result,
+    rows: result.rows.filter(row => row[0] !== null),
+    columns: result.columns.map(c => ({ ...c, name: c.name.toUpperCase() })),
+  }),
 })`}</CodeBlock>
               </article>
 
               <article className="panel">
                 <div className="panelHeader">
                   <h2>Query Result</h2>
-                  <span>{queryResult?.rows.length ?? 0} rows</span>
+                  <span>
+                    {queryResult ? (queryResult.meta?.callTransformApplied ? 'runtime + call transform' : 'runtime transform only') : '—'}
+                  </span>
                 </div>
                 <ResultTable result={queryResult} />
-              </article>
-            </>
-          ) : null}
-
-          {/* LOCAL RUNTIME */}
-          {tab === 'local' ? (
-            <>
-              <article className="panel infoPanel">
-                <div className="panelHeader"><h2>Local Runtime</h2><span>for mock / local / plugin development</span></div>
-                <p className="leadText">
-                  Registry and executor are local runtime primitives. They are useful for playground demos,
-                  unit tests, local-only apps, and plugin development — not for production datasource management.
-                </p>
-                <CodeBlock>{`const datasource = defineDatasource({
-  uid: 'sales-local',
-  type: 'mock-sales',
-  async queryData(request, context) {
-    return runQuery(request.query, context.variables)
-  },
-})
-
-const registry = createDatasourceRegistry([datasource])
-const executor = createDatasourceExecutor({ registry })
-
-const result = await executor.query(dataQuery, queryContext)`}</CodeBlock>
-              </article>
-
-              <article className="panel executePanel">
-                <div className="panelHeader">
-                  <h2>Local Executor</h2>
-                  <span>mock-sales datasource</span>
-                </div>
-                <div className="buttonGrid compact">
-                  <button className="primary" onClick={runLocalQuery}>executor.query()</button>
-                </div>
-              </article>
-
-              <article className="panel">
-                <div className="panelHeader">
-                  <h2>Local Result</h2>
-                  <span>{localResult?.rows.length ?? 0} rows</span>
-                </div>
-                <ResultTable result={localResult} />
+                {queryResult && (
+                  <div style={{ marginTop: 8 }}>
+                    <JsonBlock value={queryResult.meta} />
+                  </div>
+                )}
               </article>
             </>
           ) : null}
 
         </section>
-
-        {/* ---------------------------------------------------------------- */}
-        {/* RIGHT PANEL — events log                                          */}
-        {/* ---------------------------------------------------------------- */}
 
         {hasQueryInput ? (
           <aside className="panel inspector">
