@@ -286,15 +286,12 @@ export function createDatasourceManager(options: CreateDatasourceManagerOptions)
 
       async batchQuery(requests, context, callOptions) {
         if (options.backend.batchQuery) {
-          const rawBatch = await options.backend.batchQuery(requests, context)
-          const items = await Promise.all(rawBatch.items.map(async (item, index) => {
-            if (item.error) return item
+          const result = await options.backend.batchQuery(requests, context)
+          if (!callOptions?.transform) return result
+          const items = await Promise.all(result.items.map(async (item) => {
+            if (item.error || !item.data) return item
             try {
-              const request = requests[index]
-              if (!request) return item
-              const plugin = getPlugin(registry, getRequestType(request))
-              const data = await normalizeQueryResult(item.data, request, context, plugin, callOptions)
-              return { data }
+              return { data: await callOptions.transform!(item.data) }
             } catch (error) {
               return { error: error instanceof Error ? error : new Error(String(error)) }
             }
@@ -352,8 +349,6 @@ export function createDatasourceManager(options: CreateDatasourceManagerOptions)
 
   return manager
 }
-
-export const defineDatasourceManager = createDatasourceManager
 
 export interface CreateRestDatasourceManagerOptions {
   baseUrl: string
