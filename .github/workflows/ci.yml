@@ -54,14 +54,14 @@ jobs:
         run: VITE_BASE_PATH=/datasourcekit/playground/ pnpm playground:build
 
       - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: datasourcekit-dist
           path: dist/
           if-no-files-found: error
 
       - name: Upload playground artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: datasourcekit-playground
           path: playground/dist/
