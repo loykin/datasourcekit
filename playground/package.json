@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@loykin/datasourcekit": "workspace:*",
-    "@vitejs/plugin-react": "^5.0.0",
+    "@vitejs/plugin-react": "^6.0.2",
     "vite": "^8.0.13",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
