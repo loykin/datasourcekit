@@ -1,89 +1,364 @@
 import {
+  DatasourceCapabilityError,
   DatasourceConflictError,
   DatasourceForbiddenError,
   DatasourceNotFoundError,
   DatasourceTransportError,
+  DatasourceTypeNotRegisteredError,
   DatasourceUnauthorizedError,
   DatasourceValidationError,
 } from './errors'
+import type { DatasourcePluginDef } from './plugin'
+import { createDatasourceRegistry, type DatasourceRegistry } from './registry'
+import type {
+  BatchQueryResult,
+  DataQuery,
+  DatasourceContext,
+  DatasourceCreateInput,
+  DatasourceHealthResult,
+  DatasourceInstance,
+  DatasourceListOptions,
+  DatasourceListResult,
+  DatasourceSchemaField,
+  DatasourceSchemaFieldRequest,
+  DatasourceSchemaNamespace,
+  DatasourceTypeInfo,
+  DatasourceUpdateInput,
+  DatasourceValidationResult,
+  QueryResult,
+} from './types'
 
-export interface DatasourceInstance<TOptions = Record<string, unknown>> {
-  uid: string
-  type: string
-  name: string
-  options?: TOptions
-  enabled?: boolean
-  version?: string
-  createdAt?: string
-  updatedAt?: string
-  meta?: Record<string, unknown>
+export interface QueryCallOptions {
+  transform?: (result: QueryResult) => QueryResult | Promise<QueryResult>
 }
 
-export interface DatasourceCreateInput<TOptions = Record<string, unknown>> {
-  uid?: string
-  type: string
-  name: string
-  options?: TOptions
-  enabled?: boolean
-  meta?: Record<string, unknown>
+export interface DatasourceManagerTypes {
+  list(context?: DatasourceContext): Promise<DatasourceTypeInfo[]>
+  get(type: string, context?: DatasourceContext): Promise<DatasourceTypeInfo>
+  install?(type: string, context?: DatasourceContext): Promise<void>
+  uninstall?(type: string, context?: DatasourceContext): Promise<void>
+  enable?(type: string, context?: DatasourceContext): Promise<void>
+  disable?(type: string, context?: DatasourceContext): Promise<void>
 }
 
-export type DatasourceUpdateInput<TOptions = Record<string, unknown>> =
-  Partial<Omit<DatasourceCreateInput<TOptions>, 'uid' | 'type'>> & {
-    version?: string
-  }
-
-export interface DatasourceListFilter {
-  type?: string | string[]
-  enabled?: boolean
-  search?: string
-}
-
-export interface DatasourceListOptions {
-  filter?: DatasourceListFilter
-  page?: number
-  pageSize?: number
-  cursor?: string
-}
-
-export interface DatasourceListResult {
-  items: DatasourceInstance[]
-  total?: number
-  nextCursor?: string
-}
-
-export interface DatasourceManagerContext {
-  authToken?: string
-  headers?: Record<string, string>
-  signal?: AbortSignal
-  meta?: Record<string, unknown>
-}
-
-export interface DatasourceManager {
-  list(options?: DatasourceListOptions, context?: DatasourceManagerContext): Promise<DatasourceListResult>
-  get(uid: string, context?: DatasourceManagerContext): Promise<DatasourceInstance>
+export interface DatasourceManagerInstances {
+  list(options?: DatasourceListOptions, context?: DatasourceContext): Promise<DatasourceListResult>
+  get(uid: string, context?: DatasourceContext): Promise<DatasourceInstance>
   create(
     input: DatasourceCreateInput,
-    context?: DatasourceManagerContext,
+    context?: DatasourceContext,
   ): Promise<DatasourceInstance>
   update(
     uid: string,
     patch: DatasourceUpdateInput,
-    context?: DatasourceManagerContext,
+    context?: DatasourceContext,
   ): Promise<DatasourceInstance>
-  delete(uid: string, context?: DatasourceManagerContext): Promise<void>
+  delete(uid: string, context?: DatasourceContext): Promise<void>
+  query(
+    request: DataQuery,
+    context?: DatasourceContext,
+    options?: QueryCallOptions,
+  ): Promise<QueryResult>
+  batchQuery(
+    requests: DataQuery[],
+    context?: DatasourceContext,
+    options?: QueryCallOptions,
+  ): Promise<BatchQueryResult>
+  healthCheck(uid: string, type: string, context?: DatasourceContext): Promise<DatasourceHealthResult>
+  validateQuery(
+    uid: string,
+    type: string,
+    query: unknown,
+    context?: DatasourceContext,
+  ): Promise<DatasourceValidationResult>
+  listNamespaces(
+    uid: string,
+    type: string,
+    context?: DatasourceContext,
+  ): Promise<DatasourceSchemaNamespace[]>
+  listFields(
+    uid: string,
+    type: string,
+    request: DatasourceSchemaFieldRequest,
+    context?: DatasourceContext,
+  ): Promise<DatasourceSchemaField[]>
 }
 
-export function defineDatasourceManager(handlers: DatasourceManager): DatasourceManager {
-  return handlers
+export interface DatasourceManager {
+  registerPlugin(plugin: DatasourcePluginDef): void
+  registry: DatasourceRegistry
+  types: DatasourceManagerTypes
+  instances: DatasourceManagerInstances
 }
+
+export interface DatasourceManagerBackend {
+  types: {
+    list(context?: DatasourceContext): Promise<DatasourceTypeInfo[]>
+    get(type: string, context?: DatasourceContext): Promise<DatasourceTypeInfo>
+    install?(type: string, context?: DatasourceContext): Promise<void>
+    uninstall?(type: string, context?: DatasourceContext): Promise<void>
+    enable?(type: string, context?: DatasourceContext): Promise<void>
+    disable?(type: string, context?: DatasourceContext): Promise<void>
+  }
+  instances: {
+    list(options?: DatasourceListOptions, context?: DatasourceContext): Promise<DatasourceListResult>
+    get(uid: string, context?: DatasourceContext): Promise<DatasourceInstance>
+    create(
+      input: DatasourceCreateInput,
+      context?: DatasourceContext,
+    ): Promise<DatasourceInstance>
+    update(
+      uid: string,
+      patch: DatasourceUpdateInput,
+      context?: DatasourceContext,
+    ): Promise<DatasourceInstance>
+    delete(uid: string, context?: DatasourceContext): Promise<void>
+  }
+  query(request: DataQuery, context?: DatasourceContext): Promise<unknown>
+  batchQuery?(requests: DataQuery[], context?: DatasourceContext): Promise<BatchQueryResult>
+  healthCheck?(uid: string, context?: DatasourceContext): Promise<DatasourceHealthResult>
+  validateQuery?(
+    uid: string,
+    query: unknown,
+    context?: DatasourceContext,
+  ): Promise<DatasourceValidationResult>
+  listNamespaces?(uid: string, context?: DatasourceContext): Promise<DatasourceSchemaNamespace[]>
+  listFields?(
+    uid: string,
+    request: DatasourceSchemaFieldRequest,
+    context?: DatasourceContext,
+  ): Promise<DatasourceSchemaField[]>
+}
+
+export interface CreateDatasourceManagerOptions {
+  registry?: DatasourceRegistry
+  plugins?: readonly DatasourcePluginDef[]
+  backend: DatasourceManagerBackend
+}
+
+function getRequestType(request: DataQuery): string {
+  if (!request.datasourceType) {
+    throw new DatasourceValidationError('query request requires datasourceType', [
+      'datasourceType is required for plugin routing',
+    ])
+  }
+  return request.datasourceType
+}
+
+function getPlugin(registry: DatasourceRegistry, type: string): DatasourcePluginDef {
+  const plugin = registry.get(type)
+  if (!plugin) throw new DatasourceTypeNotRegisteredError(type)
+  return plugin
+}
+
+async function normalizeQueryResult(
+  raw: unknown,
+  request: DataQuery,
+  context: DatasourceContext | undefined,
+  plugin: DatasourcePluginDef,
+  options: QueryCallOptions | undefined,
+): Promise<QueryResult> {
+  const normalized = plugin.backend?.transform
+    ? await plugin.backend.transform(raw, request, context)
+    : raw as QueryResult
+  return options?.transform ? options.transform(normalized) : normalized
+}
+
+function typeInfoFromPlugin(plugin: DatasourcePluginDef): DatasourceTypeInfo {
+  return {
+    type: plugin.type,
+    name: plugin.name,
+    ...(plugin.description !== undefined ? { description: plugin.description } : {}),
+    installed: false,
+    enabled: false,
+    hasConfigEditor: plugin.configEditor !== undefined,
+    hasQueryEditor: plugin.queryEditor !== undefined,
+    ...(plugin.meta !== undefined ? { meta: plugin.meta } : {}),
+  }
+}
+
+function mergeTypeInfo(
+  backendTypes: DatasourceTypeInfo[],
+  plugins: DatasourcePluginDef[],
+): DatasourceTypeInfo[] {
+  const byType = new Map<string, DatasourceTypeInfo>()
+  for (const typeInfo of backendTypes) byType.set(typeInfo.type, { ...typeInfo })
+
+  for (const plugin of plugins) {
+    const current = byType.get(plugin.type)
+    if (current) {
+      byType.set(plugin.type, {
+        ...current,
+        name: current.name || plugin.name,
+        hasConfigEditor: plugin.configEditor !== undefined,
+        hasQueryEditor: plugin.queryEditor !== undefined,
+      })
+    } else {
+      byType.set(plugin.type, typeInfoFromPlugin(plugin))
+    }
+  }
+
+  return [...byType.values()]
+}
+
+async function getInstanceOptions(
+  backend: DatasourceManagerBackend,
+  uid: string,
+  context?: DatasourceContext,
+): Promise<unknown> {
+  const instance = await backend.instances.get(uid, context)
+  return instance.options ?? {}
+}
+
+function missingCapability(uid: string, capability: string): never {
+  throw new DatasourceCapabilityError(uid, capability)
+}
+
+export function createDatasourceManager(options: CreateDatasourceManagerOptions): DatasourceManager {
+  const registry = options.registry ?? createDatasourceRegistry(options.plugins)
+
+  if (options.registry && options.plugins) {
+    for (const plugin of options.plugins) registry.register(plugin)
+  }
+
+  const manager: DatasourceManager = {
+    registry,
+
+    registerPlugin(plugin) {
+      registry.register(plugin)
+    },
+
+    types: {
+      async list(context) {
+        const backendTypes = await options.backend.types.list(context)
+        return mergeTypeInfo(backendTypes, registry.list())
+      },
+
+      async get(type, context) {
+        const plugin = registry.get(type)
+        let backendType: DatasourceTypeInfo | undefined
+        try {
+          backendType = await options.backend.types.get(type, context)
+        } catch (error) {
+          if (!(error instanceof DatasourceNotFoundError) || !plugin) throw error
+        }
+        if (!backendType) {
+          if (!plugin) throw new DatasourceNotFoundError(type)
+          return typeInfoFromPlugin(plugin)
+        }
+        if (!plugin) return backendType
+        return {
+          ...backendType,
+          hasConfigEditor: plugin.configEditor !== undefined,
+          hasQueryEditor: plugin.queryEditor !== undefined,
+        }
+      },
+
+      ...(options.backend.types.install
+        ? { install: (type, context) => options.backend.types.install?.(type, context) ?? missingCapability(type, 'types.install') }
+        : {}),
+      ...(options.backend.types.uninstall
+        ? { uninstall: (type, context) => options.backend.types.uninstall?.(type, context) ?? missingCapability(type, 'types.uninstall') }
+        : {}),
+      ...(options.backend.types.enable
+        ? { enable: (type, context) => options.backend.types.enable?.(type, context) ?? missingCapability(type, 'types.enable') }
+        : {}),
+      ...(options.backend.types.disable
+        ? { disable: (type, context) => options.backend.types.disable?.(type, context) ?? missingCapability(type, 'types.disable') }
+        : {}),
+    },
+
+    instances: {
+      list: (listOptions, context) => options.backend.instances.list(listOptions, context),
+      get: (uid, context) => options.backend.instances.get(uid, context),
+      create: (input, context) => options.backend.instances.create(input, context),
+      update: (uid, patch, context) => options.backend.instances.update(uid, patch, context),
+      delete: (uid, context) => options.backend.instances.delete(uid, context),
+
+      async query(request, context, callOptions) {
+        const type = getRequestType(request)
+        const plugin = getPlugin(registry, type)
+        const raw = plugin.backend?.query
+          ? await plugin.backend.query(request, context)
+          : await options.backend.query(request, context)
+        return normalizeQueryResult(raw, request, context, plugin, callOptions)
+      },
+
+      async batchQuery(requests, context, callOptions) {
+        if (options.backend.batchQuery) {
+          const rawBatch = await options.backend.batchQuery(requests, context)
+          const items = await Promise.all(rawBatch.items.map(async (item, index) => {
+            if (item.error) return item
+            try {
+              const request = requests[index]
+              if (!request) return item
+              const plugin = getPlugin(registry, getRequestType(request))
+              const data = await normalizeQueryResult(item.data, request, context, plugin, callOptions)
+              return { data }
+            } catch (error) {
+              return { error: error instanceof Error ? error : new Error(String(error)) }
+            }
+          }))
+          return { items }
+        }
+
+        const items = await Promise.all(requests.map(async (request) => {
+          try {
+            const data = await manager.instances.query(request, context, callOptions)
+            return { data }
+          } catch (error) {
+            return { error: error instanceof Error ? error : new Error(String(error)) }
+          }
+        }))
+        return { items }
+      },
+
+      async healthCheck(uid, type, context) {
+        const plugin = getPlugin(registry, type)
+        if (plugin.backend?.healthCheck) {
+          const datasourceOptions = await getInstanceOptions(options.backend, uid, context)
+          return plugin.backend.healthCheck(uid, datasourceOptions, context)
+        }
+        return options.backend.healthCheck?.(uid, context) ?? missingCapability(uid, 'healthCheck')
+      },
+
+      async validateQuery(uid, type, query, context) {
+        const plugin = getPlugin(registry, type)
+        if (plugin.backend?.validateQuery) {
+          return plugin.backend.validateQuery(uid, query, context)
+        }
+        return options.backend.validateQuery?.(uid, query, context) ?? missingCapability(uid, 'validateQuery')
+      },
+
+      async listNamespaces(uid, type, context) {
+        const plugin = getPlugin(registry, type)
+        if (plugin.backend?.listNamespaces) {
+          const datasourceOptions = await getInstanceOptions(options.backend, uid, context)
+          return plugin.backend.listNamespaces(uid, datasourceOptions, context)
+        }
+        return options.backend.listNamespaces?.(uid, context) ?? missingCapability(uid, 'listNamespaces')
+      },
+
+      async listFields(uid, type, request, context) {
+        const plugin = getPlugin(registry, type)
+        if (plugin.backend?.listFields) {
+          const datasourceOptions = await getInstanceOptions(options.backend, uid, context)
+          return plugin.backend.listFields(uid, request, datasourceOptions, context)
+        }
+        return options.backend.listFields?.(uid, request, context) ?? missingCapability(uid, 'listFields')
+      },
+    },
+  }
+
+  return manager
+}
+
+export const defineDatasourceManager = createDatasourceManager
 
 export interface CreateRestDatasourceManagerOptions {
   baseUrl: string
   fetch?: typeof fetch
-  getHeaders?: (
-    context?: DatasourceManagerContext,
-  ) => HeadersInit | Promise<HeadersInit>
+  getHeaders?: (context?: DatasourceContext) => HeadersInit | Promise<HeadersInit>
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -110,29 +385,41 @@ async function parseResponse<T>(response: Response): Promise<T> {
 
 async function requestHeaders(
   options: CreateRestDatasourceManagerOptions,
-  context?: DatasourceManagerContext,
+  context?: DatasourceContext,
 ): Promise<HeadersInit> {
-  const headers = {
+  return {
     'content-type': 'application/json',
     ...(context?.authToken ? { authorization: `Bearer ${context.authToken}` } : {}),
     ...(context?.headers ?? {}),
-  }
-  return {
-    ...headers,
     ...await options.getHeaders?.(context),
   }
 }
 
+function queryString(options?: DatasourceListOptions): string {
+  const params = new URLSearchParams()
+  if (options?.filter?.type !== undefined) {
+    const types = Array.isArray(options.filter.type) ? options.filter.type : [options.filter.type]
+    for (const type of types) params.append('type', type)
+  }
+  if (options?.filter?.enabled !== undefined) params.set('enabled', String(options.filter.enabled))
+  if (options?.filter?.search !== undefined) params.set('search', options.filter.search)
+  if (options?.page !== undefined) params.set('page', String(options.page))
+  if (options?.pageSize !== undefined) params.set('pageSize', String(options.pageSize))
+  if (options?.cursor !== undefined) params.set('cursor', options.cursor)
+  const qs = params.toString()
+  return qs ? `?${qs}` : ''
+}
+
 export function createRestDatasourceManager(
   options: CreateRestDatasourceManagerOptions,
-): DatasourceManager {
+): DatasourceManagerBackend {
   const fetchImpl = options.fetch ?? fetch
   const baseUrl = options.baseUrl.replace(/\/$/, '')
 
   async function send<T>(
     path: string,
     init: RequestInit,
-    context?: DatasourceManagerContext,
+    context?: DatasourceContext,
   ): Promise<T> {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       ...init,
@@ -143,41 +430,40 @@ export function createRestDatasourceManager(
   }
 
   return {
-    list(options, context) {
-      const params = new URLSearchParams()
-      if (options?.filter?.type !== undefined) {
-        const types = Array.isArray(options.filter.type) ? options.filter.type : [options.filter.type]
-        for (const t of types) params.append('type', t)
-      }
-      if (options?.filter?.enabled !== undefined) params.set('enabled', String(options.filter.enabled))
-      if (options?.filter?.search !== undefined) params.set('search', options.filter.search)
-      if (options?.page !== undefined) params.set('page', String(options.page))
-      if (options?.pageSize !== undefined) params.set('pageSize', String(options.pageSize))
-      if (options?.cursor !== undefined) params.set('cursor', options.cursor)
-      const qs = params.toString()
-      return send<DatasourceListResult>(qs ? `?${qs}` : '', { method: 'GET' }, context)
+    types: {
+      list: (context) => send<DatasourceTypeInfo[]>('/types', { method: 'GET' }, context),
+      get: (type, context) => send<DatasourceTypeInfo>(`/types/${encodeURIComponent(type)}`, { method: 'GET' }, context),
+      install: (type, context) => send<void>(`/types/${encodeURIComponent(type)}/install`, { method: 'POST' }, context),
+      uninstall: (type, context) => send<void>(`/types/${encodeURIComponent(type)}/uninstall`, { method: 'POST' }, context),
+      enable: (type, context) => send<void>(`/types/${encodeURIComponent(type)}/enable`, { method: 'POST' }, context),
+      disable: (type, context) => send<void>(`/types/${encodeURIComponent(type)}/disable`, { method: 'POST' }, context),
     },
-
-    get(uid, context) {
-      return send<DatasourceInstance>(`/${encodeURIComponent(uid)}`, { method: 'GET' }, context)
-    },
-
-    create(input, context) {
-      return send<DatasourceInstance>('', {
+    instances: {
+      list: (options, context) => send<DatasourceListResult>(queryString(options), { method: 'GET' }, context),
+      get: (uid, context) => send<DatasourceInstance>(`/${encodeURIComponent(uid)}`, { method: 'GET' }, context),
+      create: (input, context) => send<DatasourceInstance>('', {
         method: 'POST',
         body: JSON.stringify(input),
-      }, context)
-    },
-
-    update(uid, patch, context) {
-      return send<DatasourceInstance>(`/${encodeURIComponent(uid)}`, {
+      }, context),
+      update: (uid, patch, context) => send<DatasourceInstance>(`/${encodeURIComponent(uid)}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
-      }, context)
+      }, context),
+      delete: (uid, context) => send<void>(`/${encodeURIComponent(uid)}`, { method: 'DELETE' }, context),
     },
-
-    async delete(uid, context) {
-      await send<void>(`/${encodeURIComponent(uid)}`, { method: 'DELETE' }, context)
-    },
+    query: (request, context) => send<unknown>('/query', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    }, context),
+    healthCheck: (uid, context) => send<DatasourceHealthResult>(`/${encodeURIComponent(uid)}/health`, { method: 'GET' }, context),
+    validateQuery: (uid, query, context) => send<DatasourceValidationResult>(`/${encodeURIComponent(uid)}/validate-query`, {
+      method: 'POST',
+      body: JSON.stringify(query),
+    }, context),
+    listNamespaces: (uid, context) => send<DatasourceSchemaNamespace[]>(`/${encodeURIComponent(uid)}/namespaces`, { method: 'GET' }, context),
+    listFields: (uid, request, context) => send<DatasourceSchemaField[]>(`/${encodeURIComponent(uid)}/fields`, {
+      method: 'POST',
+      body: JSON.stringify(request),
+    }, context),
   }
 }

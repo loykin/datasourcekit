@@ -8,6 +8,7 @@ import {
   type DatasourceInstance,
   type DatasourceListOptions,
   type DatasourceSchemaNamespace,
+  type DatasourceTypeInfo,
 } from '@loykin/datasourcekit'
 
 export type Scenario = 'none' | 'forbidCreate' | 'forbidDelete' | 'forbidUpdate' | 'conflict'
@@ -22,14 +23,42 @@ const SEED: DatasourceInstance[] = [
   { uid: 'redis-cache', type: 'redis', name: 'Cache Redis', enabled: false, version: '1', createdAt: makeTs(), updatedAt: makeTs() },
 ]
 
+const TYPES: DatasourceTypeInfo[] = [
+  { type: 'postgres', name: 'PostgreSQL', enabled: true, installed: true },
+  { type: 'clickhouse', name: 'ClickHouse', enabled: true, installed: true },
+  { type: 'mysql', name: 'MySQL', enabled: true, installed: true },
+  { type: 'redis', name: 'Redis', enabled: false, installed: true },
+]
+
 export function createFakeBackend() {
   let store: DatasourceInstance[] = SEED.map((d) => ({ ...d }))
+  let types: DatasourceTypeInfo[] = TYPES.map((t) => ({ ...t }))
   let scenario: Scenario = 'none'
 
   return {
     setScenario(s: Scenario) { scenario = s },
-    reset() { store = SEED.map((d) => ({ ...d })); scenario = 'none' },
+    reset() { store = SEED.map((d) => ({ ...d })); types = TYPES.map((t) => ({ ...t })); scenario = 'none' },
     actorDelete(uid: string) { store = store.filter((d) => d.uid !== uid) },
+
+    async listTypes(): Promise<DatasourceTypeInfo[]> {
+      return types
+    },
+
+    async getType(type: string): Promise<DatasourceTypeInfo> {
+      const info = types.find((t) => t.type === type)
+      if (!info) throw new DatasourceNotFoundError(type)
+      return info
+    },
+
+    async enableType(type: string): Promise<void> {
+      await this.getType(type)
+      types = types.map((t) => t.type === type ? { ...t, enabled: true } : t)
+    },
+
+    async disableType(type: string): Promise<void> {
+      await this.getType(type)
+      types = types.map((t) => t.type === type ? { ...t, enabled: false } : t)
+    },
 
     async list(options?: DatasourceListOptions) {
       let items = [...store]

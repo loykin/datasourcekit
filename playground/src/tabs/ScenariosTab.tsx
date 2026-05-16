@@ -41,34 +41,34 @@ export function ScenariosTab({ manager, backend }: Props) {
 
   async function triggerActorDelete() {
     clearErr('actorDelete')
-    const { items } = await manager.list()
+    const { items } = await manager.instances.list()
     if (!items[0]) {
       setErr('actorDelete', 'no datasources — call list() in the Manager tab first')
       return
     }
     backend.actorDelete(items[0].uid)
     try {
-      await manager.get(items[0].uid)
+      await manager.instances.get(items[0].uid)
     } catch (err) {
       setErr('actorDelete', fmt(err))
     }
   }
 
   async function triggerConflict() {
-    const { items } = await manager.list()
+    const { items } = await manager.instances.list()
     if (!items[0]) {
       setErr('conflict', 'no datasources — call list() in the Manager tab first')
       return
     }
     await trigger('conflict', 'conflict', () =>
-      manager.update(items[0].uid, { name: 'Updated', version: '999' })
+      manager.instances.update(items[0].uid, { name: 'Updated', version: '999' })
     )
   }
 
   async function triggerValidation() {
     clearErr('validation')
     try {
-      await manager.create({ type: 'postgres', name: '' })
+      await manager.instances.create({ type: 'postgres', name: '' })
     } catch (err) {
       if (err instanceof DatasourceValidationError) {
         setErr('validation', `${err.name}: ${err.message}${err.errors ? ' — ' + err.errors.join(', ') : ''}`)
@@ -103,7 +103,7 @@ export function ScenariosTab({ manager, backend }: Props) {
           <button
             className={triggerCls}
             onClick={() => trigger('forbidCreate', 'forbidCreate', () =>
-              manager.create({ type: 'postgres', name: 'New DS' })
+              manager.instances.create({ type: 'postgres', name: 'New DS' })
             )}
           >
             Trigger

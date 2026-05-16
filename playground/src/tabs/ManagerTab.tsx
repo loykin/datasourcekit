@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { DatasourceInstance, DatasourceManager, DatasourceListOptions } from '@loykin/datasourcekit'
 import { CodeBlock, ErrorBadge, type LogEntry, LogPanel } from '../ui'
 
@@ -35,11 +35,15 @@ export function ManagerTab({ manager }: Props) {
   }
 
   async function fetchList(options?: DatasourceListOptions) {
-    const result = await manager.list(options)
+    const result = await manager.instances.list(options)
     setInstances(result.items)
     setTotal(result.total)
     return result
   }
+
+  useEffect(() => {
+    fetchList().catch((err) => log('error', fmt(err)))
+  }, [manager])
 
   async function handleList() {
     try {
@@ -62,7 +66,7 @@ export function ManagerTab({ manager }: Props) {
   async function handleCreate() {
     setCreateError('')
     try {
-      const ds = await manager.create({ type: createType, name: createName })
+      const ds = await manager.instances.create({ type: createType, name: createName })
       await fetchList()
       setCreateName('')
       log('info', `create() → "${ds.uid}"`, { name: ds.name, type: ds.type })
@@ -74,7 +78,7 @@ export function ManagerTab({ manager }: Props) {
 
   async function handleDelete(uid: string) {
     try {
-      await manager.delete(uid)
+      await manager.instances.delete(uid)
       setSelected('')
       await fetchList()
       log('info', `delete("${uid}") succeeded`)
@@ -83,10 +87,17 @@ export function ManagerTab({ manager }: Props) {
 
   return (
     <div className="max-w-5xl space-y-6">
+      <div className="bg-white border border-gray-200 rounded-lg p-5">
+        <p className="text-sm font-semibold text-gray-900">Datasource instances</p>
+        <p className="text-sm text-gray-500 mt-1">
+          These calls go to the backend-owned datasource store. The frontend does not keep authoritative datasource state.
+        </p>
+      </div>
+
       <div className="grid grid-cols-2 gap-4">
         {/* Create */}
         <div className="bg-white border border-gray-200 rounded-lg p-5">
-          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-4">Create datasource</p>
+          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-4">Create instance</p>
           <div className="space-y-3">
             <div>
               <label className="block text-sm text-gray-600 mb-1">Name</label>
@@ -104,14 +115,14 @@ export function ManagerTab({ manager }: Props) {
               onClick={handleCreate}
               disabled={!createName.trim()}
             >
-              manager.create()
+                manager.instances.create()
             </button>
           </div>
         </div>
 
         {/* Filter */}
         <div className="bg-white border border-gray-200 rounded-lg p-5">
-          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-4">Filter & list</p>
+          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-4">Load from backend</p>
           <div className="space-y-3">
             <div>
               <label className="block text-sm text-gray-600 mb-1">Search</label>
@@ -139,13 +150,13 @@ export function ManagerTab({ manager }: Props) {
                 className="bg-teal-600 text-white text-sm font-medium py-2 rounded-md hover:bg-teal-700 transition-colors"
                 onClick={handleList}
               >
-                list()
+                instances.list()
               </button>
               <button
                 className="border border-teal-600 text-teal-700 text-sm font-medium py-2 rounded-md hover:bg-teal-50 transition-colors"
                 onClick={handleFilteredList}
               >
-                list(filter)
+                instances.list(filter)
               </button>
             </div>
           </div>
@@ -161,7 +172,7 @@ export function ManagerTab({ manager }: Props) {
           </span>
         </div>
         {instances.length === 0 ? (
-          <div className="px-5 py-10 text-center text-sm text-gray-400">Call list() to load</div>
+          <div className="px-5 py-10 text-center text-sm text-gray-400">Call instances.list() to load</div>
         ) : (
           <div className="divide-y divide-gray-100">
             {instances.map((ds) => (
@@ -199,16 +210,16 @@ export function ManagerTab({ manager }: Props) {
       <div className="bg-white border border-gray-200 rounded-lg p-5">
         <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-3">Filter & pagination API</p>
         <CodeBlock>{`// filter by type + name search
-const { items, total } = await manager.list({
+const { items, total } = await manager.instances.list({
   filter: { type: 'postgres', search: 'main', enabled: true },
 })
 
 // page-based
-const { items, total } = await manager.list({ page: 0, pageSize: 10 })
+const { items, total } = await manager.instances.list({ page: 0, pageSize: 10 })
 
 // cursor-based
-const { items, nextCursor } = await manager.list({ pageSize: 10 })
-const next = await manager.list({ pageSize: 10, cursor: nextCursor })`}</CodeBlock>
+const { items, nextCursor } = await manager.instances.list({ pageSize: 10 })
+const next = await manager.instances.list({ pageSize: 10, cursor: nextCursor })`}</CodeBlock>
       </div>
 
       <LogPanel entries={logs} />

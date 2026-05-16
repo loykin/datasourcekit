@@ -19,6 +19,13 @@ export class DatasourceCapabilityError extends Error {
   }
 }
 
+export class DatasourceTypeNotRegisteredError extends Error {
+  constructor(type: string) {
+    super(`datasource type "${type}" is not registered`)
+    this.name = 'DatasourceTypeNotRegisteredError'
+  }
+}
+
 export class DatasourceUnauthorizedError extends Error {
   constructor(message = 'datasource request is not authenticated') {
     super(message)

@@ -1,16 +1,22 @@
-import { useRef, useState } from 'react'
-import { defineDatasourceManager, defineDatasourceRuntime } from '@loykin/datasourcekit'
+import { useMemo, useRef, useState } from 'react'
+import {
+  createDatasourceManager,
+  defineDatasourcePlugin,
+  type QueryResult,
+} from '@loykin/datasourcekit'
 import { createFakeBackend } from './fakeBackend'
 import { PurposeTab } from './tabs/PurposeTab'
+import { TypesTab } from './tabs/TypesTab'
 import { ManagerTab } from './tabs/ManagerTab'
 import { ScenariosTab } from './tabs/ScenariosTab'
 import { RuntimeTab } from './tabs/RuntimeTab'
 
 const TABS = [
   { id: 'purpose', label: 'Purpose' },
-  { id: 'manager', label: 'Manager' },
+  { id: 'types', label: 'Types' },
+  { id: 'manager', label: 'Datasources' },
+  { id: 'query', label: 'Query Routing' },
   { id: 'scenarios', label: 'Scenarios' },
-  { id: 'runtime', label: 'Runtime' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
@@ -21,17 +27,69 @@ export default function App() {
   const backendRef = useRef(createFakeBackend())
   const backend = backendRef.current
 
-  const manager = defineDatasourceManager({
-    list: (options) => backend.list(options),
-    get: (uid) => backend.get(uid),
-    create: (input) => backend.create(input),
-    update: (uid, patch) => backend.update(uid, patch),
-    delete: (uid) => backend.delete(uid),
-  })
+  const manager = useMemo(() => createDatasourceManager({
+    plugins: [
+      defineDatasourcePlugin({
+        type: 'postgres',
+        name: 'PostgreSQL',
+        configEditor: () => null,
+        queryEditor: () => null,
+        backend: {
+          transform: normalizeRawResult,
+        },
+      }),
+      defineDatasourcePlugin({
+        type: 'clickhouse',
+        name: 'ClickHouse',
+        configEditor: () => null,
+        queryEditor: () => null,
+        backend: {
+          transform: normalizeRawResult,
+        },
+      }),
+      defineDatasourcePlugin({
+        type: 'mysql',
+        name: 'MySQL',
+        configEditor: () => null,
+        queryEditor: () => null,
+        backend: {
+          transform: normalizeRawResult,
+        },
+      }),
+      defineDatasourcePlugin({
+        type: 'prometheus',
+        name: 'Prometheus',
+        description: 'Registered frontend plugin, not installed on backend',
+        configEditor: () => null,
+        queryEditor: () => null,
+        backend: {
+          transform: normalizeRawResult,
+        },
+      }),
+    ],
+    backend: {
+      types: {
+        list: () => backend.listTypes(),
+        get: (type) => backend.getType(type),
+        enable: (type) => backend.enableType(type),
+        disable: (type) => backend.disableType(type),
+      },
+      instances: {
+        list: (options) => backend.list(options),
+        get: (uid) => backend.get(uid),
+        create: (input) => backend.create(input),
+        update: (uid, patch) => backend.update(uid, patch),
+        delete: (uid) => backend.delete(uid),
+      },
+      query: (request) => backend.query(request.datasourceUid),
+      healthCheck: (uid) => backend.healthCheck(uid),
+      validateQuery: async () => ({ valid: true }),
+      listNamespaces: (uid) => backend.listNamespaces(uid),
+      listFields: async () => [],
+    },
+  }), [backend])
 
-  const runtime = defineDatasourceRuntime({
-    query: (request) => backend.query(request.datasourceUid),
-    transform: (raw) => {
+  function normalizeRawResult(raw: unknown): QueryResult {
       const r = raw as { fields: string[]; data: unknown[][]; reqId: string; uid: string }
       return {
         columns: r.fields.map((name) => ({ name, type: 'string' })),
@@ -39,20 +97,14 @@ export default function App() {
         requestId: r.reqId,
         meta: { uid: r.uid, normalized: true },
       }
-    },
-    healthCheck: (uid) => backend.healthCheck(uid),
-    validateQuery: async () => ({ valid: true }),
-    listNamespaces: (uid) => backend.listNamespaces(uid),
-    listFields: async () => [],
-    variableQuery: async () => [],
-    queryAnnotations: async () => [],
-  })
+  }
 
   const content: Record<TabId, React.ReactNode> = {
     purpose: <PurposeTab />,
+    types: <TypesTab manager={manager} />,
     manager: <ManagerTab manager={manager} />,
+    query: <RuntimeTab manager={manager} />,
     scenarios: <ScenariosTab manager={manager} backend={backend} />,
-    runtime: <RuntimeTab runtime={runtime} />,
   }
 
   return (
