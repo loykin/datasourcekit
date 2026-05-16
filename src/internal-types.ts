@@ -12,6 +12,7 @@ export type {
   DatasourceValidationResult,
   QueryContext,
   QueryResult,
+  VariableOption,
 } from './types'
 export type { DatasourceRegistry } from './registry'
 export type { DatasourceExecutor } from './executor'

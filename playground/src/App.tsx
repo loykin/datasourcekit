@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   createDatasourceExecutor,
+  createDatasourceRegistry,
   defineDatasource,
   type Annotation,
   type DataQuery,
@@ -34,6 +35,17 @@ type LogEntry = {
   detail?: unknown
 }
 
+type TabId = 'quickstart' | 'registry' | 'query' | 'capabilities' | 'authorization' | 'remote'
+
+const tabs: Array<{ id: TabId; label: string }> = [
+  { id: 'quickstart', label: 'Quickstart' },
+  { id: 'registry', label: 'Registry' },
+  { id: 'query', label: 'Query' },
+  { id: 'capabilities', label: 'Capabilities' },
+  { id: 'authorization', label: 'Authorization' },
+  { id: 'remote', label: 'Remote Bridge' },
+]
+
 const countries = ['US', 'KR', 'JP', 'DE', 'FR']
 const datasourceUid = 'sales-demo'
 const datasourceOptions: SalesOptions = {
@@ -41,6 +53,8 @@ const datasourceOptions: SalesOptions = {
   region: 'ap-northeast-2',
   sampleRate: 1,
 }
+
+type SalesDatasourceDef = DatasourcePluginDef<SalesOptions, SalesQuery>
 
 const salesRows = [
   { orderId: 'A-1001', country: 'US', product: 'Atlas', revenue: 12800, status: 'paid' },
@@ -108,12 +122,20 @@ function querySales(request: DataQuery<SalesQuery>, context: QueryContext & { da
   }
 }
 
-const salesDatasource = defineDatasource<SalesOptions, SalesQuery>({
-  uid: datasourceUid,
-  type: 'mock-sales',
-  name: 'Mock Sales Datasource',
-  options: datasourceOptions,
-  cacheTtlMs: 30_000,
+function createSalesDatasource(options: {
+  uid?: string
+  name?: string
+  datasourceOptions?: SalesOptions
+} = {}): SalesDatasourceDef {
+  const uid = options.uid ?? datasourceUid
+  const datasourceConfig = options.datasourceOptions ?? datasourceOptions
+
+  return defineDatasource<SalesOptions, SalesQuery>({
+    uid,
+    type: 'mock-sales',
+    name: options.name ?? 'Mock Sales Datasource',
+    options: datasourceConfig,
+    cacheTtlMs: 30_000,
   queryData: async (request, context) => querySales(request, context),
   subscribeData: (request, context, onData) => {
     let tick = 0
@@ -189,7 +211,8 @@ const salesDatasource = defineDatasource<SalesOptions, SalesQuery>({
       },
     ],
   },
-})
+  })
+}
 
 function buildContext(role: string): QueryContext {
   return {
@@ -211,6 +234,10 @@ function formatError(error: unknown) {
 
 function JsonBlock({ value }: { value: unknown }) {
   return <pre className="json">{JSON.stringify(value, null, 2)}</pre>
+}
+
+function CodeBlock({ children }: { children: string }) {
+  return <pre className="json code">{children}</pre>
 }
 
 function ResultTable({ result }: { result?: QueryResult }) {
@@ -241,10 +268,12 @@ function ResultTable({ result }: { result?: QueryResult }) {
 }
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<TabId>('quickstart')
   const [query, setQuery] = useState<SalesQuery>({ metric: 'orders', country: 'all', limit: 5, minRevenue: 0 })
   const [role, setRole] = useState('analyst')
   const [result, setResult] = useState<QueryResult>()
   const [streamResult, setStreamResult] = useState<QueryResult>()
+  const [remotePayload, setRemotePayload] = useState<unknown>()
   const [health, setHealth] = useState<DatasourceHealthResult>()
   const [validation, setValidation] = useState<DatasourceValidationResult>()
   const [namespaces, setNamespaces] = useState<DatasourceSchemaNamespace[]>([])
@@ -253,12 +282,24 @@ export default function App() {
   const [annotations, setAnnotations] = useState<Annotation[]>([])
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
+  const [datasourceDefs, setDatasourceDefs] = useState<SalesDatasourceDef[]>(() => [createSalesDatasource()])
+  const [datasourceDraft, setDatasourceDraft] = useState({
+    name: 'Mock Sales Datasource',
+    endpoint: datasourceOptions.endpoint,
+    region: datasourceOptions.region,
+    sampleRate: datasourceOptions.sampleRate,
+  })
   const unsubscribeRef = useRef<(() => void) | undefined>(undefined)
+
+  const registry = useMemo(
+    () => createDatasourceRegistry(datasourceDefs as unknown as DatasourcePluginDef[]),
+    [datasourceDefs],
+  )
 
   const executor = useMemo(
     () =>
       createDatasourceExecutor({
-        datasources: [salesDatasource as unknown as DatasourcePluginDef],
+        registry,
         authorize: (request) => {
           const roles = request.context.authContext?.subject?.roles ?? []
           if (request.action === 'datasource:subscribe' && !roles.includes('analyst') && !roles.includes('admin')) {
@@ -267,7 +308,7 @@ export default function App() {
           return true
         },
       }),
-    [],
+    [registry],
   )
 
   const context = useMemo(() => buildContext(role), [role])
@@ -281,9 +322,58 @@ export default function App() {
     }),
     [query],
   )
+  const showQueryInput = activeTab === 'query' || activeTab === 'capabilities' || activeTab === 'authorization' || activeTab === 'remote'
 
   function pushLog(level: LogEntry['level'], message: string, detail?: unknown) {
     setLogs((current) => [{ id: Date.now() + current.length, level, message, detail }, ...current].slice(0, 8))
+  }
+
+  function draftDatasource(): SalesDatasourceDef {
+    return createSalesDatasource({
+      name: datasourceDraft.name,
+      datasourceOptions: {
+        endpoint: datasourceDraft.endpoint,
+        region: datasourceDraft.region,
+        sampleRate: datasourceDraft.sampleRate,
+      },
+    })
+  }
+
+  function registrySalesDatasources(): SalesDatasourceDef[] {
+    return registry.list() as unknown as SalesDatasourceDef[]
+  }
+
+  function registerDatasource() {
+    registry.register(draftDatasource() as unknown as DatasourcePluginDef)
+    setDatasourceDefs(registrySalesDatasources())
+    pushLog('info', 'datasource registered', registry.get(datasourceUid))
+  }
+
+  function updateDatasource() {
+    try {
+      const next = draftDatasource()
+      registry.update(datasourceUid, {
+        name: next.name,
+        options: next.options,
+        cacheTtlMs: next.cacheTtlMs,
+      })
+      setDatasourceDefs(registrySalesDatasources())
+      pushLog('info', 'datasource updated', registry.get(datasourceUid))
+    } catch (error) {
+      pushLog('error', formatError(error))
+    }
+  }
+
+  function unregisterDatasource() {
+    const removed = registry.unregister(datasourceUid)
+    setDatasourceDefs(registrySalesDatasources())
+    pushLog(removed ? 'info' : 'error', removed ? 'datasource unregistered' : 'datasource was not registered')
+  }
+
+  function clearDatasources() {
+    registry.clear()
+    setDatasourceDefs([])
+    pushLog('info', 'registry cleared')
   }
 
   async function runQuery() {
@@ -319,14 +409,17 @@ export default function App() {
   }
 
   async function loadVariables() {
-    const support = salesDatasource.variable
-    const nextVariables = await support?.metricFindQuery(query.country === 'all' ? '' : query.country, {
-      datasourceOptions,
-      variables: context.variables ?? {},
+    const nextVariables = await executor.metricFindQuery({
+      id: 'country-variable',
+      datasourceUid,
+      datasourceType: 'mock-sales',
+      query: query.country === 'all' ? '' : query.country,
+    }, {
+      variables: context.variables,
       authContext: context.authContext,
-      timeRange: context.timeRange ? { from: context.timeRange.from, to: context.timeRange.to } : undefined,
+      timeRange: context.timeRange,
     })
-    setVariables(nextVariables ?? [])
+    setVariables(nextVariables)
     pushLog('info', 'variable options loaded', nextVariables)
   }
 
@@ -337,6 +430,19 @@ export default function App() {
     )
     setAnnotations(nextAnnotations)
     pushLog('info', 'annotations loaded', nextAnnotations)
+  }
+
+  async function runRemoteBridge() {
+    const payload = {
+      endpoint: '/api/datasource/query',
+      method: 'POST',
+      body: {
+        request,
+        context,
+      },
+    }
+    setRemotePayload(payload)
+    pushLog('info', 'remote bridge payload prepared', payload)
   }
 
   function toggleStream() {
@@ -384,7 +490,7 @@ export default function App() {
       <header className="topBar">
         <div>
           <h1>DatasourceKit Playground</h1>
-          <p>Compose a datasource request, execute it, then inspect the runtime context.</p>
+          <p>Registry, executor, datasource capabilities, and app-owned remote bridge patterns.</p>
         </div>
         <div className="statusPill">
           <span className={isStreaming ? 'dot live' : 'dot'} />
@@ -392,207 +498,504 @@ export default function App() {
         </div>
       </header>
 
-      <nav className="flowRail" aria-label="DatasourceKit execution flow">
-        <div>
-          <strong>1</strong>
-          <span>Request</span>
-        </div>
-        <i />
-        <div>
-          <strong>2</strong>
-          <span>Execute</span>
-        </div>
-        <i />
-        <div>
-          <strong>3</strong>
-          <span>Inspect</span>
-        </div>
+      <nav className="tabBar" aria-label="DatasourceKit sections">
+        {tabs.map((tab) => (
+          <button
+            className={activeTab === tab.id ? 'active' : ''}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            type="button"
+          >
+            {tab.label}
+          </button>
+        ))}
       </nav>
 
-      <section className="workspace">
-        <aside className="panel controls stepPanel">
-          <div className="panelHeader">
-            <h2><span className="stepBadge">1</span> Request Builder</h2>
-            <span>{datasourceUid}</span>
-          </div>
-
-          <label>
-            Metric
-            <select value={query.metric} onChange={(event) => setQuery({ ...query, metric: event.target.value as SalesQuery['metric'] })}>
-              <option value="orders">Orders</option>
-              <option value="revenue">Revenue</option>
-              <option value="countries">Countries</option>
-            </select>
-          </label>
-
-          <label>
-            Country
-            <select value={query.country} onChange={(event) => setQuery({ ...query, country: event.target.value })}>
-              <option value="all">All</option>
-              {countries.map((country) => (
-                <option key={country} value={country}>
-                  {country}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Limit
-            <input
-              type="number"
-              min="1"
-              value={query.limit}
-              onChange={(event) => setQuery({ ...query, limit: Number(event.target.value) })}
-            />
-          </label>
-
-          <label>
-            Minimum revenue
-            <input
-              type="number"
-              min="0"
-              step="100"
-              value={query.minRevenue}
-              onChange={(event) => setQuery({ ...query, minRevenue: Number(event.target.value) })}
-            />
-          </label>
-
-          <label>
-            Role
-            <select value={role} onChange={(event) => setRole(event.target.value)}>
-              <option value="analyst">analyst</option>
-              <option value="viewer">viewer</option>
-              <option value="admin">admin</option>
-            </select>
-          </label>
-
-          <div className="jsonPanel">
-            <h3>DataQuery</h3>
-            <JsonBlock value={request} />
-          </div>
-        </aside>
-
-        <section className="content stepPanel">
-          <article className="panel executePanel">
+      <section className={showQueryInput ? 'workspace' : 'workspace noQueryInput'}>
+        {showQueryInput ? (
+          <aside className="panel controls">
             <div className="panelHeader">
-              <h2><span className="stepBadge">2</span> Executor</h2>
-              <span>createDatasourceExecutor()</span>
+              <h2>DataQuery & Context</h2>
+              <span>{datasourceUid}</span>
             </div>
-            <div className="buttonGrid">
-              <button className="primary" onClick={runQuery}>Run Query</button>
-              <button onClick={runValidation}>Validate</button>
-              <button onClick={runHealth}>Health</button>
-              <button onClick={loadSchema}>Schema</button>
-              <button onClick={loadVariables}>Variables</button>
-              <button onClick={loadAnnotations}>Annotations</button>
-              <button className={isStreaming ? 'danger' : ''} onClick={toggleStream}>
-                {isStreaming ? 'Stop Stream' : 'Start Stream'}
-              </button>
-            </div>
-          </article>
 
-          <div className="summaryGrid">
-            <article className="panel metric">
-              <span>Health</span>
-              <strong>{health?.ok ? 'OK' : 'Unknown'}</strong>
-              <small>{health?.message ?? 'Run health check'}</small>
-            </article>
-            <article className="panel metric">
-              <span>Validation</span>
-              <strong>{validation ? (validation.valid ? 'Valid' : 'Invalid') : 'Pending'}</strong>
-              <small>{validation?.errors?.join(', ') || 'No validation errors'}</small>
-            </article>
-            <article className="panel metric">
-              <span>Rows</span>
-              <strong>{result?.rows.length ?? 0}</strong>
-              <small>{result?.requestId ?? 'No request'}</small>
-            </article>
-          </div>
+            <label>
+              Metric
+              <select value={query.metric} onChange={(event) => setQuery({ ...query, metric: event.target.value as SalesQuery['metric'] })}>
+                <option value="orders">Orders</option>
+                <option value="revenue">Revenue</option>
+                <option value="countries">Countries</option>
+              </select>
+            </label>
 
-          <article className="panel">
-            <div className="panelHeader">
-              <h2>Query Result</h2>
-              <span>{result?.columns.length ?? 0} columns</span>
-            </div>
-            <ResultTable result={result} />
-          </article>
-
-          <div className="splitGrid">
-            <article className="panel">
-              <div className="panelHeader">
-                <h2>Stream</h2>
-                <span>{streamResult?.meta?.streamTick ? `tick ${streamResult.meta.streamTick}` : 'not started'}</span>
-              </div>
-              <ResultTable result={streamResult} />
-            </article>
-            <article className="panel">
-              <div className="panelHeader">
-                <h2>Variables</h2>
-                <span>{variables.length} options</span>
-              </div>
-              <div className="chipList">
-                {variables.map((option) => (
-                  <span key={option.value}>{option.label}</span>
+            <label>
+              Country
+              <select value={query.country} onChange={(event) => setQuery({ ...query, country: event.target.value })}>
+                <option value="all">All</option>
+                {countries.map((country) => (
+                  <option key={country} value={country}>
+                    {country}
+                  </option>
                 ))}
-              </div>
-            </article>
+              </select>
+            </label>
 
-            <article className="panel">
-              <div className="panelHeader">
-                <h2>Annotations</h2>
-                <span>{annotations.length} events</span>
-              </div>
-              <div className="annotationList">
-                {annotations.map((annotation) => (
-                  <div key={annotation.id}>
-                    <strong>{annotation.title}</strong>
-                    <span>{new Date(annotation.time).toLocaleString()}</span>
+            <label>
+              Limit
+              <input
+                type="number"
+                min="1"
+                value={query.limit}
+                onChange={(event) => setQuery({ ...query, limit: Number(event.target.value) })}
+              />
+            </label>
+
+            <label>
+              Minimum revenue
+              <input
+                type="number"
+                min="0"
+                step="100"
+                value={query.minRevenue}
+                onChange={(event) => setQuery({ ...query, minRevenue: Number(event.target.value) })}
+              />
+            </label>
+
+            <label>
+              Role
+              <select value={role} onChange={(event) => setRole(event.target.value)}>
+                <option value="analyst">analyst</option>
+                <option value="viewer">viewer</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+
+            <div className="jsonPanel">
+              <h3>DataQuery</h3>
+              <JsonBlock value={request} />
+            </div>
+
+            <div className="jsonPanel">
+              <h3>QueryContext</h3>
+              <JsonBlock value={context} />
+            </div>
+          </aside>
+        ) : null}
+
+        <section className="content">
+          {activeTab === 'quickstart' ? (
+            <>
+              <article className="panel infoPanel">
+                <div className="panelHeader">
+                  <h2>Quickstart</h2>
+                  <span>register / execute / result</span>
+                </div>
+                <div className="explainGrid">
+                  <div>
+                    <strong>1. Define</strong>
+                    <p>Create a datasource plugin. The plugin owns how queryData reaches a database, API, SDK, or app backend.</p>
                   </div>
-                ))}
+                  <div>
+                    <strong>2. Register</strong>
+                    <p>Put datasource plugins into a registry. Runtime management can add, update, delete, or clear datasources.</p>
+                  </div>
+                  <div>
+                    <strong>3. Execute</strong>
+                    <p>Executor receives DataQuery and QueryContext, resolves the datasource, checks policy, and returns QueryResult.</p>
+                  </div>
+                </div>
+              </article>
+
+              <article className="panel">
+                <div className="panelHeader">
+                  <h2>Minimal Usage</h2>
+                  <span>framework independent</span>
+                </div>
+                <CodeBlock>{`const datasource = defineDatasource({
+  uid: 'sales-demo',
+  type: 'mock-sales',
+  async queryData(request, context) {
+    return runQuery(request.query, context.variables)
+  },
+})
+
+const registry = createDatasourceRegistry([datasource])
+const executor = createDatasourceExecutor({ registry })
+
+const result = await executor.query(dataQuery, queryContext)`}</CodeBlock>
+              </article>
+
+              <article className="panel executePanel">
+                <div className="panelHeader">
+                  <h2>Try It</h2>
+                  <span>{registry.has(datasourceUid) ? 'registered' : 'not registered'}</span>
+                </div>
+                <div className="buttonGrid compact">
+                  <button className="primary" onClick={runQuery}>Run Query</button>
+                </div>
+              </article>
+
+              <article className="panel">
+                <div className="panelHeader">
+                  <h2>QueryResult</h2>
+                  <span>{result?.rows.length ?? 0} rows</span>
+                </div>
+                <ResultTable result={result} />
+              </article>
+            </>
+          ) : null}
+
+          {activeTab === 'registry' ? (
+            <>
+              <article className="panel">
+                <div className="panelHeader">
+                  <h2>Registered Datasources</h2>
+                  <span>{registry.list().length} plugin</span>
+                </div>
+                <div className="schemaList">
+                  {registry.list().length === 0 ? (
+                    <div>
+                      <strong>No datasource registered</strong>
+                      <span>Queries fail until a datasource is registered again.</span>
+                    </div>
+                  ) : (
+                    registry.list().map((datasource) => (
+                      <div key={datasource.uid}>
+                        <strong>{datasource.name ?? datasource.uid}</strong>
+                        <span>{datasource.uid} / {datasource.type}</span>
+                        <small>{JSON.stringify(datasource.options ?? {})}</small>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </article>
+
+              <article className="panel controls">
+                <div className="panelHeader">
+                  <h2>Manage Datasource</h2>
+                  <span>register / update / delete</span>
+                </div>
+                <div className="formGrid">
+                  <label>
+                    Name
+                    <input
+                      value={datasourceDraft.name}
+                      onChange={(event) => setDatasourceDraft({ ...datasourceDraft, name: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Endpoint
+                    <input
+                      value={datasourceDraft.endpoint}
+                      onChange={(event) => setDatasourceDraft({ ...datasourceDraft, endpoint: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Region
+                    <input
+                      value={datasourceDraft.region}
+                      onChange={(event) => setDatasourceDraft({ ...datasourceDraft, region: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Sample rate
+                    <input
+                      max="1"
+                      min="0"
+                      step="0.1"
+                      type="number"
+                      value={datasourceDraft.sampleRate}
+                      onChange={(event) => setDatasourceDraft({ ...datasourceDraft, sampleRate: Number(event.target.value) })}
+                    />
+                  </label>
+                </div>
+                <div className="buttonGrid manageActions">
+                  <button className="primary" onClick={registerDatasource}>Register</button>
+                  <button onClick={updateDatasource}>Update</button>
+                  <button className="danger" onClick={unregisterDatasource}>Delete</button>
+                  <button onClick={clearDatasources}>Clear All</button>
+                </div>
+              </article>
+
+              <article className="panel">
+                <div className="panelHeader">
+                  <h2>Management API</h2>
+                  <span>runtime registry</span>
+                </div>
+                <CodeBlock>{`const registry = createDatasourceRegistry([])
+
+registry.register(datasource)
+registry.update('sales-demo', { options: nextOptions })
+registry.unregister('sales-demo')
+registry.clear()
+
+const executor = createDatasourceExecutor({ registry })`}</CodeBlock>
+              </article>
+            </>
+          ) : null}
+
+          {activeTab === 'query' ? (
+            <>
+              <article className="panel executePanel">
+                <div className="panelHeader">
+                  <h2>Executor</h2>
+                  <span>query / stream</span>
+                </div>
+                <div className="buttonGrid">
+                  <button className="primary" onClick={runQuery}>Run Query</button>
+                  <button className={isStreaming ? 'danger' : ''} onClick={toggleStream}>
+                    {isStreaming ? 'Stop Stream' : 'Start Stream'}
+                  </button>
+                </div>
+              </article>
+
+              <div className="summaryGrid">
+                <article className="panel metric">
+                  <span>Rows</span>
+                  <strong>{result?.rows.length ?? 0}</strong>
+                  <small>{result?.requestId ?? 'No request'}</small>
+                </article>
+                <article className="panel metric">
+                  <span>Streaming</span>
+                  <strong>{isStreaming ? 'Live' : 'Idle'}</strong>
+                  <small>{streamResult?.meta?.streamTick ? `tick ${streamResult.meta.streamTick}` : 'No stream data'}</small>
+                </article>
+                <article className="panel metric">
+                  <span>Role</span>
+                  <strong>{role}</strong>
+                  <small>viewer cannot subscribe</small>
+                </article>
               </div>
-            </article>
-          </div>
+
+              <article className="panel">
+                <div className="panelHeader">
+                  <h2>Query Result</h2>
+                  <span>{result?.columns.length ?? 0} columns</span>
+                </div>
+                <ResultTable result={result} />
+              </article>
+
+              <article className="panel">
+                <div className="panelHeader">
+                  <h2>Stream Result</h2>
+                  <span>{streamResult?.meta?.streamTick ? `tick ${streamResult.meta.streamTick}` : 'not started'}</span>
+                </div>
+                <ResultTable result={streamResult} />
+              </article>
+            </>
+          ) : null}
+
+          {activeTab === 'capabilities' ? (
+            <>
+              <article className="panel executePanel">
+                <div className="panelHeader">
+                  <h2>Datasource Capabilities</h2>
+                  <span>editor / schema / health / variables / annotations</span>
+                </div>
+                <div className="buttonGrid">
+                  <button onClick={runValidation}>Validate Query</button>
+                  <button onClick={runHealth}>Health Check</button>
+                  <button onClick={loadSchema}>Load Schema</button>
+                  <button onClick={loadVariables}>Variable Options</button>
+                  <button onClick={loadAnnotations}>Annotations</button>
+                </div>
+              </article>
+
+              <div className="summaryGrid">
+                <article className="panel metric">
+                  <span>Health</span>
+                  <strong>{health?.ok ? 'OK' : 'Unknown'}</strong>
+                  <small>{health?.message ?? 'Run health check'}</small>
+                </article>
+                <article className="panel metric">
+                  <span>Validation</span>
+                  <strong>{validation ? (validation.valid ? 'Valid' : 'Invalid') : 'Pending'}</strong>
+                  <small>{validation?.errors?.join(', ') || 'No validation errors'}</small>
+                </article>
+                <article className="panel metric">
+                  <span>Schema</span>
+                  <strong>{fields.length}</strong>
+                  <small>{namespaces.length} namespaces</small>
+                </article>
+              </div>
+
+              <div className="splitGrid">
+                <article className="panel">
+                  <div className="panelHeader">
+                    <h2>Schema Browser Data</h2>
+                    <span>{namespaces.length} namespaces</span>
+                  </div>
+                  <div className="schemaList">
+                    {namespaces.map((namespace) => (
+                      <div key={namespace.id}>
+                        <strong>{namespace.name}</strong>
+                        <span>{namespace.kind}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="fieldList">
+                    {fields.map((field) => (
+                      <span key={field.name}>{field.label ?? field.name}</span>
+                    ))}
+                  </div>
+                </article>
+
+                <article className="panel">
+                  <div className="panelHeader">
+                    <h2>Variable Options</h2>
+                    <span>{variables.length} options</span>
+                  </div>
+                  <div className="chipList">
+                    {variables.map((option) => (
+                      <span key={option.value}>{option.label}</span>
+                    ))}
+                  </div>
+                </article>
+
+                <article className="panel">
+                  <div className="panelHeader">
+                    <h2>Annotations</h2>
+                    <span>{annotations.length} events</span>
+                  </div>
+                  <div className="annotationList">
+                    {annotations.map((annotation) => (
+                      <div key={annotation.id}>
+                        <strong>{annotation.title}</strong>
+                        <span>{new Date(annotation.time).toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              </div>
+            </>
+          ) : null}
+
+          {activeTab === 'authorization' ? (
+            <>
+              <article className="panel infoPanel">
+                <div className="panelHeader">
+                  <h2>Authorization Hook</h2>
+                  <span>datasource-level policy</span>
+                </div>
+                <p className="leadText">
+                  The executor can enforce datasource policy before calling a plugin. In this demo, query is allowed for
+                  every role, but subscribe is allowed only for analyst and admin.
+                </p>
+              </article>
+
+              <div className="summaryGrid">
+                <article className="panel metric">
+                  <span>Current role</span>
+                  <strong>{role}</strong>
+                  <small>Change it in DataQuery & Context</small>
+                </article>
+                <article className="panel metric">
+                  <span>Query</span>
+                  <strong>Allowed</strong>
+                  <small>datasource:query</small>
+                </article>
+                <article className="panel metric">
+                  <span>Subscribe</span>
+                  <strong>{role === 'viewer' ? 'Denied' : 'Allowed'}</strong>
+                  <small>datasource:subscribe</small>
+                </article>
+              </div>
+
+              <article className="panel executePanel">
+                <div className="panelHeader">
+                  <h2>Try Policy</h2>
+                  <span>viewer should fail streaming</span>
+                </div>
+                <div className="buttonGrid compact">
+                  <button className="primary" onClick={runQuery}>Run Query</button>
+                  <button className={isStreaming ? 'danger' : ''} onClick={toggleStream}>
+                    {isStreaming ? 'Stop Stream' : 'Start Stream'}
+                  </button>
+                </div>
+              </article>
+
+              <article className="panel">
+                <div className="panelHeader">
+                  <h2>Policy Code</h2>
+                  <span>executor option</span>
+                </div>
+                <CodeBlock>{`const executor = createDatasourceExecutor({
+  registry,
+  authorize(request) {
+    const roles = request.context.authContext?.subject?.roles ?? []
+    if (request.action === 'datasource:subscribe') {
+      return roles.includes('analyst') || roles.includes('admin')
+    }
+    return true
+  },
+})`}</CodeBlock>
+              </article>
+            </>
+          ) : null}
+
+          {activeTab === 'remote' ? (
+            <>
+              <article className="panel infoPanel">
+                <div className="panelHeader">
+                  <h2>Remote Bridge</h2>
+                  <span>app-owned backend</span>
+                </div>
+                <p className="leadText">
+                  DatasourceKit is not a backend server. A plugin may call your backend, or an app can expose an adapter
+                  endpoint that receives DataQuery and QueryContext, runs server-side policy, then returns QueryResult.
+                </p>
+                <div className="buttonGrid compact">
+                  <button className="primary" onClick={runRemoteBridge}>Prepare Payload</button>
+                </div>
+              </article>
+
+              <article className="panel">
+                <div className="panelHeader">
+                  <h2>Remote Query Payload</h2>
+                  <span>/api/datasource/query</span>
+                </div>
+                {remotePayload ? <JsonBlock value={remotePayload} /> : <div className="empty">No payload prepared</div>}
+              </article>
+
+              <article className="panel">
+                <div className="panelHeader">
+                  <h2>Client Bridge Example</h2>
+                  <span>custom adapter/plugin</span>
+                </div>
+                <CodeBlock>{`const remoteDatasource = defineDatasource({
+  uid: 'remote-query',
+  type: 'backend',
+  async queryData(request, context) {
+    const response = await fetch('/api/datasource/query', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ request, context }),
+      signal: context.signal,
+    })
+    return response.json()
+  },
+})`}</CodeBlock>
+              </article>
+            </>
+          ) : null}
         </section>
 
-        <aside className="panel inspector stepPanel">
-          <div className="panelHeader">
-            <h2><span className="stepBadge">3</span> Inspector</h2>
-            <span>{role}</span>
-          </div>
-          <JsonBlock value={context} />
-
-          <div className="panelHeader logHeader">
-            <h2>Schema</h2>
-            <span>{namespaces.length} namespaces</span>
-          </div>
-          <div className="schemaList">
-            {namespaces.map((namespace) => (
-              <div key={namespace.id}>
-                <strong>{namespace.name}</strong>
-                <span>{namespace.kind}</span>
-              </div>
-            ))}
-          </div>
-          <div className="fieldList">
-            {fields.map((field) => (
-              <span key={field.name}>{field.label ?? field.name}</span>
-            ))}
-          </div>
-
-          <div className="panelHeader logHeader">
-            <h2>Events</h2>
-            <span>{logs.length}</span>
-          </div>
-          <div className="logList">
-            {logs.map((log) => (
-              <div className={log.level} key={log.id}>
-                <strong>{log.message}</strong>
-                {log.detail !== undefined ? <JsonBlock value={log.detail} /> : null}
-              </div>
-            ))}
-          </div>
-        </aside>
+        {showQueryInput ? (
+          <aside className="panel inspector">
+            <div className="panelHeader">
+              <h2>Events</h2>
+              <span>{logs.length}</span>
+            </div>
+            <div className="logList">
+              {logs.map((log) => (
+                <div className={log.level} key={log.id}>
+                  <strong>{log.message}</strong>
+                  {log.detail !== undefined ? <JsonBlock value={log.detail} /> : null}
+                </div>
+              ))}
+            </div>
+          </aside>
+        ) : null}
       </section>
     </main>
   )

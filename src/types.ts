@@ -226,6 +226,7 @@ export interface DataAuthorizationRequest {
   action:
     | 'datasource:query'
     | 'datasource:subscribe'
+    | 'datasource:variable'
     | 'datasource:schema'
     | 'datasource:health'
   datasourceUid: string

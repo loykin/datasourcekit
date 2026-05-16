@@ -24,6 +24,9 @@ function requestType(request: DatasourceRequestLike): string | undefined {
 
 export interface DatasourceRegistry {
   register(def: DatasourcePluginDef): void
+  update(uid: string, patch: Partial<Omit<DatasourcePluginDef, 'uid'>>): DatasourcePluginDef
+  unregister(uid: string): boolean
+  clear(): void
   get(uid: string): DatasourcePluginDef | undefined
   getForRequest(request: DatasourceRequestLike): DatasourcePluginDef
   tryGetForRequest(request: DatasourceRequestLike): DatasourcePluginDef | undefined
@@ -49,6 +52,22 @@ export function createDatasourceRegistry(
   return {
     register(def) {
       byUid.set(def.uid, def)
+    },
+
+    update(uid, patch) {
+      const current = byUid.get(uid)
+      if (!current) throw new DatasourceNotFoundError(uid)
+      const next = { ...current, ...patch, uid }
+      byUid.set(uid, next)
+      return next
+    },
+
+    unregister(uid) {
+      return byUid.delete(uid)
+    },
+
+    clear() {
+      byUid.clear()
     },
 
     get(uid) {

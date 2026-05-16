@@ -85,56 +85,25 @@ button.danger {
   background: #ffffff;
 }
 
-.flowRail {
-  display: grid;
-  grid-template-columns: minmax(220px, 340px) 36px minmax(320px, 1fr) 36px minmax(220px, 380px);
-  gap: 0;
-  align-items: center;
+.tabBar {
+  display: flex;
+  gap: 8px;
   max-width: 1720px;
   margin: 0 auto 14px;
+  overflow-x: auto;
 }
 
-.flowRail div {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 42px;
+.tabBar button {
+  min-width: 130px;
   padding: 0 14px;
-  border: 1px solid #c7d0df;
   border-radius: 8px;
-  background: #ffffff;
-  color: #334155;
   font-weight: 700;
 }
 
-.flowRail strong,
-.stepBadge {
-  display: inline-grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
+.tabBar button.active {
+  border-color: #0f766e;
   background: #0f766e;
   color: #ffffff;
-  font-size: 12px;
-}
-
-.flowRail i {
-  height: 2px;
-  background: #94a3b8;
-  position: relative;
-}
-
-.flowRail i::after {
-  content: "";
-  position: absolute;
-  right: -1px;
-  top: -4px;
-  width: 0;
-  height: 0;
-  border-top: 5px solid transparent;
-  border-bottom: 5px solid transparent;
-  border-left: 7px solid #94a3b8;
 }
 
 .dot {
@@ -157,15 +126,21 @@ button.danger {
   align-items: start;
 }
 
+.workspace.noQueryInput {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workspace.noQueryInput .content {
+  max-width: 1180px;
+  width: 100%;
+  justify-self: center;
+}
+
 .panel {
   border: 1px solid #d5dce8;
   border-radius: 8px;
   background: #ffffff;
   box-shadow: 0 1px 2px rgb(20 30 50 / 0.05);
-}
-
-.stepPanel {
-  outline: 2px solid transparent;
 }
 
 .controls,
@@ -257,6 +232,53 @@ select {
 .executePanel .buttonGrid {
   grid-template-columns: repeat(7, minmax(92px, 1fr));
   overflow-x: auto;
+}
+
+.buttonGrid.compact {
+  grid-template-columns: repeat(2, minmax(120px, 180px));
+}
+
+.buttonGrid.manageActions {
+  grid-template-columns: repeat(4, minmax(92px, 1fr));
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.infoPanel {
+  padding: 14px;
+}
+
+.explainGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.explainGrid div {
+  display: grid;
+  gap: 8px;
+  min-height: 132px;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.explainGrid strong {
+  color: #0f766e;
+  font-size: 13px;
+}
+
+.explainGrid p,
+.leadText {
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .metric {
@@ -351,6 +373,7 @@ tr:last-child td {
 }
 
 .schemaList span,
+.schemaList small,
 .annotationList span {
   color: #64748b;
   font-size: 12px;
@@ -399,15 +422,6 @@ tr:last-child td {
 }
 
 @media (max-width: 1180px) {
-  .flowRail {
-    grid-template-columns: 1fr;
-    gap: 8px;
-  }
-
-  .flowRail i {
-    display: none;
-  }
-
   .workspace {
     grid-template-columns: 300px minmax(0, 1fr);
   }
@@ -423,7 +437,7 @@ tr:last-child td {
   }
 
   .topBar,
-  .flowRail,
+  .tabBar,
   .workspace {
     display: grid;
   }
@@ -431,6 +445,9 @@ tr:last-child td {
   .workspace,
   .summaryGrid,
   .splitGrid,
+  .explainGrid,
+  .formGrid,
+  .buttonGrid.manageActions,
   .executePanel .buttonGrid {
     grid-template-columns: 1fr;
   }

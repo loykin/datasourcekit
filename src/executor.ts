@@ -15,6 +15,7 @@ import type {
   DatasourceValidationResult,
   QueryContext,
   QueryResult,
+  VariableOption,
 } from './internal-types'
 
 export interface CreateDatasourceExecutorOptions {
@@ -72,6 +73,11 @@ export interface DatasourceExecutor {
     onData: (result: QueryResult) => void,
     onError: (error: Error) => void,
   ): () => void
+
+  metricFindQuery(
+    request: DataQuery<string>,
+    context?: QueryContext,
+  ): Promise<VariableOption[]>
 
   listNamespaces(
     datasourceUid: string,
@@ -154,6 +160,27 @@ export function createDatasourceExecutor(
         )
       }
       throw new DatasourceCapabilityError(request.datasourceUid, 'subscribe')
+    },
+
+    async metricFindQuery(request, context = {}) {
+      const ctx = withDefaults(context)
+      const ds = registry.getForRequest(request)
+      if (!ds.variable?.metricFindQuery) {
+        throw new DatasourceCapabilityError(request.datasourceUid, 'variable.metricFindQuery')
+      }
+      await ensureAuthorized(options, authorizationRequest({
+        action: 'datasource:variable',
+        datasourceUid: request.datasourceUid,
+        ...(request.datasourceType !== undefined ? { datasourceType: request.datasourceType } : {}),
+        query: request,
+        context: ctx,
+      }))
+      return ds.variable.metricFindQuery(request.query ?? '', {
+        datasourceOptions: ds.options ?? {},
+        variables: ctx.variables ?? {},
+        ...(ctx.timeRange ? { timeRange: ctx.timeRange } : {}),
+        ...(ctx.authContext !== undefined ? { authContext: ctx.authContext } : {}),
+      })
     },
 
     async listNamespaces(datasourceUid, context = {}) {

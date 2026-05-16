@@ -75,6 +75,21 @@ Datasource plugins expose capabilities explicitly:
 Missing capabilities fail through `DatasourceCapabilityError`. This package
 does not expose the DashboardKit-style query options signature.
 
+```ts
+const options = await executor.metricFindQuery(
+  {
+    id: 'country-variable',
+    datasourceUid: 'main-api',
+    datasourceType: 'http',
+    query: 'country=KR',
+  },
+  {
+    variables: { env: 'prod' },
+    timeRange: { from: 'now-1h', to: 'now' },
+  },
+)
+```
+
 ## Authorization
 
 Use the executor `authorize` hook to enforce datasource-level policy across

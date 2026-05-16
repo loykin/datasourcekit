@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 24.14.0
+  PNPM_VERSION: 11
+
+jobs:
+  build:
+    name: Build & Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm type-check
+
+      - name: Build package
+        run: pnpm build
+
+      - name: Build playground
+        run: VITE_BASE_PATH=/datasourcekit/playground/ pnpm playground:build
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: datasourcekit-dist
+          path: dist/
+          if-no-files-found: error
+
+      - name: Upload playground artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: datasourcekit-playground
+          path: playground/dist/
+          if-no-files-found: error
+
+  deploy-playground:
+    name: Deploy Playground
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download playground artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: datasourcekit-playground
+          path: playground-dist
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: playground-dist
+          destination_dir: playground
+          keep_files: true
+          commit_message: "chore(ci): deploy playground"
