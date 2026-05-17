@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import {
   createDatasourceManager,
   defineDatasourcePlugin,
+  tableRowsToFrame,
   type QueryResult,
 } from '@loykin/datasourcekit'
 import { createFakeBackend } from './fakeBackend'
@@ -89,16 +90,23 @@ export default function App() {
       healthCheck: (uid) => backend.healthCheck(uid),
       validateQuery: async () => ({ valid: true }),
       listNamespaces: (uid) => backend.listNamespaces(uid),
-      listFields: async () => [],
+      listFields: (uid, request) => backend.listFields(uid, request),
     },
   }), [backend])
 
   function normalizeRawResult(raw: unknown): QueryResult {
       const r = raw as { fields: string[]; data: unknown[][]; reqId: string; uid: string }
       return {
-        columns: r.fields.map((name) => ({ name, type: 'string' })),
-        rows: r.data,
+        frames: [
+          tableRowsToFrame({
+            columns: r.fields.map((name) => ({ name, type: 'string' })),
+            rows: r.data,
+          }),
+        ],
         requestId: r.reqId,
+        stats: {
+          rowsReturned: r.data.length,
+        },
         meta: { uid: r.uid, normalized: true, rawBackendResponse: raw },
       }
   }

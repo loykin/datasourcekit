@@ -8,6 +8,8 @@ import {
   type DatasourceHealthResult,
   type DatasourceInstance,
   type DatasourceListOptions,
+  type DatasourceSchemaField,
+  type DatasourceSchemaFieldRequest,
   type DatasourceSchemaNamespace,
   type DatasourceTypeInfo,
 } from '@loykin/datasourcekit'
@@ -61,7 +63,7 @@ export function createFakeBackend() {
 
     async uninstallType(type: string): Promise<void> {
       await this.getType(type)
-      types = types.map((t) => t.type === type ? { ...t, installed: false, enabled: false } : t)
+      types = types.filter((t) => t.type !== type)
     },
 
     async enableType(type: string): Promise<void> {
@@ -165,9 +167,26 @@ export function createFakeBackend() {
       const ds = store.find((d) => d.uid === uid)
       if (!ds) throw new DatasourceNotFoundError(uid)
       return [
-        { id: 'public', name: 'public', kind: 'schema' },
-        { id: 'public.users', name: 'users', kind: 'table', parentId: 'public' },
-        { id: 'public.events', name: 'events', kind: 'table', parentId: 'public' },
+        { id: 'public', name: 'public', kind: 'schema', hasChildren: true },
+        { id: 'public.users', name: 'users', kind: 'table', parentId: 'public', hasChildren: true },
+        { id: 'public.events', name: 'events', kind: 'table', parentId: 'public', hasChildren: true },
+      ]
+    },
+
+    async listFields(uid: string, request: DatasourceSchemaFieldRequest): Promise<DatasourceSchemaField[]> {
+      const ds = store.find((d) => d.uid === uid)
+      if (!ds) throw new DatasourceNotFoundError(uid)
+      if (request.namespaceId.endsWith('.events')) {
+        return [
+          { name: 'time', type: 'timestamp', kind: 'time', nullable: false, insertText: '"time"' },
+          { name: 'service', type: 'text', kind: 'string', nullable: false, insertText: '"service"' },
+          { name: 'duration_ms', type: 'double precision', kind: 'number', nullable: true, insertText: '"duration_ms"' },
+        ]
+      }
+      return [
+        { name: 'id', type: 'uuid', kind: 'string', nullable: false, insertText: '"id"' },
+        { name: 'name', type: 'text', kind: 'string', nullable: false, insertText: '"name"' },
+        { name: 'created_at', type: 'timestamp', kind: 'time', nullable: true, insertText: '"created_at"' },
       ]
     },
   }

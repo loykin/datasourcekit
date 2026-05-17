@@ -58,7 +58,10 @@ export function RuntimeTab({ manager }: Props) {
     ? {
         transform: (r: QueryResult) => ({
           ...r,
-          columns: r.columns.map((c) => ({ ...c, name: c.name.toUpperCase() })),
+          frames: r.frames.map((frame) => ({
+            ...frame,
+            fields: frame.fields.map((field) => ({ ...field, name: field.name.toUpperCase() })),
+          })),
           meta: { ...r.meta, callTransformApplied: true },
         }),
       }
@@ -215,8 +218,8 @@ final = options?.transform?.(normalized) ?? normalized`}</CodeBlock>
             <TraceBlock
               title="3. Plugin QueryResult"
               value={queryResult ? {
-                columns: queryResult.columns,
-                rows: queryResult.rows,
+                frames: queryResult.frames,
+                stats: queryResult.stats,
                 requestId: queryResult.requestId,
                 meta: {
                   uid: queryResult.meta?.uid,

@@ -12,6 +12,7 @@ import type { DatasourcePluginDef } from './plugin'
 import { createDatasourceRegistry, type DatasourceRegistry } from './registry'
 import type {
   BatchQueryResult,
+  BatchQueryResultItem,
   DataQuery,
   DatasourceContext,
   DatasourceCreateInput,
@@ -214,6 +215,17 @@ function missingCapability(uid: string, capability: string): never {
   throw new DatasourceCapabilityError(uid, capability)
 }
 
+function ensureBatchResultIds(result: BatchQueryResult): BatchQueryResult {
+  return {
+    items: result.items.map((item, index): BatchQueryResultItem => {
+      if (item.id) return item
+      throw new DatasourceValidationError('batch query result item is missing id', [
+        `items[${index}].id is required`,
+      ])
+    }),
+  }
+}
+
 export function createDatasourceManager(options: CreateDatasourceManagerOptions): DatasourceManager {
   const registry = options.registry ?? createDatasourceRegistry(options.plugins)
 
@@ -286,14 +298,14 @@ export function createDatasourceManager(options: CreateDatasourceManagerOptions)
 
       async batchQuery(requests, context, callOptions) {
         if (options.backend.batchQuery) {
-          const result = await options.backend.batchQuery(requests, context)
+          const result = ensureBatchResultIds(await options.backend.batchQuery(requests, context))
           if (!callOptions?.transform) return result
           const items = await Promise.all(result.items.map(async (item) => {
             if (item.error || !item.data) return item
             try {
-              return { data: await callOptions.transform!(item.data) }
+              return { id: item.id, data: await callOptions.transform!(item.data) }
             } catch (error) {
-              return { error: error instanceof Error ? error : new Error(String(error)) }
+              return { id: item.id, error: error instanceof Error ? error : new Error(String(error)) }
             }
           }))
           return { items }
@@ -302,9 +314,9 @@ export function createDatasourceManager(options: CreateDatasourceManagerOptions)
         const items = await Promise.all(requests.map(async (request) => {
           try {
             const data = await manager.instances.query(request, context, callOptions)
-            return { data }
+            return { id: request.id, data }
           } catch (error) {
-            return { error: error instanceof Error ? error : new Error(String(error)) }
+            return { id: request.id, error: error instanceof Error ? error : new Error(String(error)) }
           }
         }))
         return { items }
@@ -355,6 +367,8 @@ export interface CreateRestDatasourceManagerOptions {
   fetch?: typeof fetch
   getHeaders?: (context?: DatasourceContext) => HeadersInit | Promise<HeadersInit>
   paths?: Partial<RestDatasourceManagerPaths>
+  serializeQueryBody?(request: DataQuery, context?: DatasourceContext): unknown
+  serializeBatchQueryBody?(requests: DataQuery[], context?: DatasourceContext): unknown
   unwrap?<T>(body: unknown, response: Response): T
   createError?(response: Response, body: unknown): Error | undefined
 }
@@ -369,6 +383,7 @@ export interface RestDatasourceManagerPaths {
   instanceUpdate(uid: string): string
   instanceDelete(uid: string): string
   query(): string
+  batchQuery(): string
   healthCheck(uid: string): string
   validateQuery(uid: string): string
   listNamespaces(uid: string): string
@@ -385,6 +400,7 @@ const defaultRestPaths: RestDatasourceManagerPaths = {
   instanceUpdate: (uid) => `/${encodeURIComponent(uid)}`,
   instanceDelete: (uid) => `/${encodeURIComponent(uid)}`,
   query: () => '/query',
+  batchQuery: () => '/batch-query',
   healthCheck: (uid) => `/${encodeURIComponent(uid)}/health`,
   validateQuery: (uid) => `/${encodeURIComponent(uid)}/validate-query`,
   listNamespaces: (uid) => `/${encodeURIComponent(uid)}/namespaces`,
@@ -498,7 +514,11 @@ export function createRestDatasourceManager(
     },
     query: (request, context) => send<unknown>(paths.query(), {
       method: 'POST',
-      body: JSON.stringify(request),
+      body: JSON.stringify(options.serializeQueryBody?.(request, context) ?? request),
+    }, context),
+    batchQuery: (requests, context) => send<BatchQueryResult>(paths.batchQuery(), {
+      method: 'POST',
+      body: JSON.stringify(options.serializeBatchQueryBody?.(requests, context) ?? requests),
     }, context),
     healthCheck: (uid, context) => send<DatasourceHealthResult>(paths.healthCheck(uid), { method: 'GET' }, context),
     validateQuery: (uid, query, context) => send<DatasourceValidationResult>(paths.validateQuery(uid), {

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type {
   DatasourceHealthResult,
   DatasourceManager,
+  DatasourceSchemaField,
   DatasourceSchemaNamespace,
 } from '@loykin/datasourcekit'
 import { CodeBlock, type LogEntry, LogPanel } from '../ui'
@@ -19,6 +20,7 @@ export function CapabilitiesTab({ manager }: Props) {
   const [type, setType] = useState('postgres')
   const [health, setHealth] = useState<DatasourceHealthResult | undefined>()
   const [namespaces, setNamespaces] = useState<DatasourceSchemaNamespace[]>([])
+  const [fields, setFields] = useState<DatasourceSchemaField[]>([])
   const [logs, setLogs] = useState<LogEntry[]>([])
 
   function log(level: LogEntry['level'], message: string, detail?: unknown) {
@@ -43,7 +45,18 @@ export function CapabilitiesTab({ manager }: Props) {
     try {
       const result = await manager.instances.listNamespaces(uid, type)
       setNamespaces(result)
+      setFields([])
       log('info', `instances.listNamespaces("${uid}", "${type}")`, result)
+    } catch (err) {
+      log('error', fmt(err))
+    }
+  }
+
+  async function runListFields(namespaceId: string) {
+    try {
+      const result = await manager.instances.listFields(uid, type, { namespaceId })
+      setFields(result)
+      log('info', `instances.listFields("${uid}", "${type}", { namespaceId: "${namespaceId}" })`, result)
     } catch (err) {
       log('error', fmt(err))
     }
@@ -94,8 +107,26 @@ export function CapabilitiesTab({ manager }: Props) {
           </div>
           <button className={btnOutline} onClick={runListNamespaces}>manager.instances.listNamespaces()</button>
           {namespaces.length > 0 && (
+            <div className="space-y-3">
+              <pre className="text-xs text-gray-600 bg-gray-50 rounded-md px-3 py-3 overflow-x-auto font-mono">
+                {JSON.stringify(namespaces, null, 2)}
+              </pre>
+              <div className="flex flex-wrap gap-2">
+                {namespaces.filter((namespace) => namespace.hasChildren).map((namespace) => (
+                  <button
+                    key={namespace.id}
+                    className="border border-gray-300 text-gray-700 text-xs font-medium px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors"
+                    onClick={() => runListFields(namespace.id)}
+                  >
+                    fields: {namespace.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {fields.length > 0 && (
             <pre className="text-xs text-gray-600 bg-gray-50 rounded-md px-3 py-3 overflow-x-auto font-mono">
-              {JSON.stringify(namespaces, null, 2)}
+              {JSON.stringify(fields, null, 2)}
             </pre>
           )}
         </div>

@@ -121,7 +121,7 @@ const result = await manager.instances.query({
   query: { rawSql: 'select 1' },
 })
 
-console.log(result.columns.length)
+console.log(result.frames.length)
 `,
   )
 
@@ -143,7 +143,7 @@ const result = await manager.instances.query({
   datasourceType: 'postgres',
 })
 
-if (!Array.isArray(result.rows)) throw new Error('invalid ESM query result')
+if (!Array.isArray(result.frames)) throw new Error('invalid ESM query result')
 `,
   )
 
@@ -164,7 +164,7 @@ manager.instances.query({
   datasourceUid: 'pg',
   datasourceType: 'postgres',
 }).then((result) => {
-  if (!Array.isArray(result.rows)) throw new Error('invalid CJS query result')
+  if (!Array.isArray(result.frames)) throw new Error('invalid CJS query result')
 })
 `,
   )

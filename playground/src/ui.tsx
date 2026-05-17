@@ -1,4 +1,4 @@
-import type { QueryResult } from '@loykin/datasourcekit'
+import { tableFrameToRows, type QueryResult } from '@loykin/datasourcekit'
 
 export function CodeBlock({ children }: { children: string }) {
   return (
@@ -17,12 +17,22 @@ export function ErrorBadge({ message }: { message: string }) {
 }
 
 export function ResultTable({ result }: { result: QueryResult }) {
+  const frame = result.frames.find((frame) => frame.frameType === 'table') ?? result.frames[0]
+  if (!frame) {
+    return (
+      <div className="text-sm text-gray-400">
+        No frames returned
+      </div>
+    )
+  }
+  const table = tableFrameToRows(frame)
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm border-collapse">
         <thead>
           <tr className="border-b border-gray-200">
-            {result.columns.map((c) => (
+            {table.columns.map((c) => (
               <th key={c.name} className="text-left px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide">
                 {c.name}
               </th>
@@ -30,7 +40,7 @@ export function ResultTable({ result }: { result: QueryResult }) {
           </tr>
         </thead>
         <tbody>
-          {result.rows.map((row, i) => (
+          {table.rows.map((row, i) => (
             <tr key={i} className="border-b border-gray-100 last:border-0">
               {row.map((cell, j) => (
                 <td key={j} className="px-3 py-2 text-gray-700">{String(cell)}</td>

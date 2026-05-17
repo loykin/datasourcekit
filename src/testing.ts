@@ -1,7 +1,9 @@
 import { DatasourceConflictError, DatasourceNotFoundError } from './errors'
 import type { DatasourceManagerBackend } from './manager'
+import { tableRowsToFrame } from './types'
 import type {
   DataQuery,
+  DatasourceContext,
   DatasourceCreateInput,
   DatasourceInstance,
   DatasourceListOptions,
@@ -166,15 +168,19 @@ export function createMemoryDatasourceBackend(
       },
     },
 
-    async query(request: DataQuery): Promise<QueryResult> {
+    async query(request: DataQuery, _context?: DatasourceContext): Promise<QueryResult> {
       const ds = findInstance(request.datasourceUid)
       return {
-        columns: [
-          { name: 'name', type: 'string' },
-          { name: 'type', type: 'string' },
-          { name: 'version', type: 'string' },
+        frames: [
+          tableRowsToFrame({
+            columns: [
+              { name: 'name', type: 'string' },
+              { name: 'type', type: 'string' },
+              { name: 'version', type: 'string' },
+            ],
+            rows: [[ds.name, ds.type, ds.version ?? '']],
+          }),
         ],
-        rows: [[ds.name, ds.type, ds.version ?? '']],
         requestId: request.id,
         meta: { datasourceUid: ds.uid },
       }

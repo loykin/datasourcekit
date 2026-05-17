@@ -87,6 +87,7 @@ A plugin owns the type-specific UI hooks and response normalization. PostgreSQL 
 import {
   createDatasourceManager,
   defineDatasourcePlugin,
+  tableRowsToFrame,
   type QueryResult,
 } from '@loykin/datasourcekit'
 
@@ -108,8 +109,12 @@ function normalizePostgresResult(raw: unknown): QueryResult {
   }
 
   return {
-    columns: response.fields.map((name) => ({ name, type: 'string' })),
-    rows: response.rows,
+    frames: [
+      tableRowsToFrame({
+        columns: response.fields.map((name) => ({ name, type: 'string' })),
+        rows: response.rows,
+      }),
+    ],
     requestId: response.requestId,
   }
 }
@@ -193,7 +198,7 @@ manager.instances.query(request)
   -> registry.get('postgres')
   -> backend.query(request)
   -> postgresPlugin.backend.transform(raw, request)
-  -> QueryResult
+  -> QueryResult.frames
 ```
 
 ## Manager API
@@ -303,7 +308,15 @@ const backend = createRestDatasourceManager({
     typeGet: (type) => `/catalog/datasource-types/${type}`,
     instancesList: (queryString) => `/connections${queryString}`,
     query: () => '/query/run',
+    batchQuery: () => '/query/batch',
   },
+  serializeQueryBody: (request, context) => ({
+    request,
+    context: {
+      variables: context?.variables,
+      timeRange: context?.timeRange,
+    },
+  }),
   unwrap: (body) => body.data,
   createError: (response, body) => {
     if (response.status === 500) {

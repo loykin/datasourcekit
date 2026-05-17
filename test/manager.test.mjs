@@ -4,6 +4,7 @@ import {
   DatasourceTypeNotRegisteredError,
   createDatasourceManager,
   defineDatasourcePlugin,
+  tableRowsToFrame,
 } from '../dist/index.js'
 import { createMemoryDatasourceBackend } from '../dist/testing.js'
 
@@ -76,8 +77,12 @@ test('instances.query uses plugin transform after backend fallback query', async
           transform: (raw) => {
             assert.deepEqual(raw, { fields: ['value'], rows: [[1]] })
             return {
-              columns: [{ name: 'value', type: 'number' }],
-              rows: [[1]],
+              frames: [
+                tableRowsToFrame({
+                  columns: [{ name: 'value', type: 'number' }],
+                  rows: [[1]],
+                }),
+              ],
               meta: { transformedBy: 'postgres' },
             }
           },
@@ -106,7 +111,7 @@ test('instances.query uses plugin transform after backend fallback query', async
     datasourceType: 'postgres',
   })
 
-  assert.equal(result.columns[0].name, 'value')
+  assert.equal(result.frames[0].fields[0].name, 'value')
   assert.equal(result.meta.transformedBy, 'postgres')
 })
 
@@ -121,8 +126,12 @@ test('instances.query applies call transform after plugin transform', async () =
         name: 'PostgreSQL',
         backend: {
           transform: () => ({
-            columns: [{ name: 'value', type: 'number' }],
-            rows: [[1]],
+            frames: [
+              tableRowsToFrame({
+                columns: [{ name: 'value', type: 'number' }],
+                rows: [[1]],
+              }),
+            ],
           }),
         },
       }),
@@ -137,11 +146,68 @@ test('instances.query applies call transform after plugin transform', async () =
   }, undefined, {
     transform: (result) => ({
       ...result,
-      columns: result.columns.map((column) => ({ ...column, name: column.name.toUpperCase() })),
+      frames: result.frames.map((frame) => ({
+        ...frame,
+        fields: frame.fields.map((field) => ({ ...field, name: field.name.toUpperCase() })),
+      })),
     }),
   })
 
-  assert.equal(result.columns[0].name, 'VALUE')
+  assert.equal(result.frames[0].fields[0].name, 'VALUE')
+})
+
+test('instances.batchQuery preserves ids in fallback partial results', async () => {
+  const manager = createDatasourceManager({
+    plugins: [
+      defineDatasourcePlugin({
+        type: 'postgres',
+        name: 'PostgreSQL',
+      }),
+    ],
+    backend: createMemoryDatasourceBackend({
+      instances: [{ uid: 'pg', type: 'postgres', name: 'PG' }],
+    }),
+  })
+
+  const result = await manager.instances.batchQuery([
+    { id: 'A', datasourceUid: 'pg', datasourceType: 'postgres' },
+    { id: 'B', datasourceUid: 'missing', datasourceType: 'postgres' },
+  ])
+
+  assert.equal(result.items[0].id, 'A')
+  assert.equal(result.items[0].data.requestId, 'A')
+  assert.equal(result.items[1].id, 'B')
+  assert.equal(result.items[1].error.name, 'DatasourceNotFoundError')
+})
+
+test('instances.batchQuery rejects native backend items without ids', async () => {
+  const manager = createDatasourceManager({
+    plugins: [
+      defineDatasourcePlugin({
+        type: 'postgres',
+        name: 'PostgreSQL',
+      }),
+    ],
+    backend: {
+      ...createMemoryDatasourceBackend({
+        instances: [{ uid: 'pg', type: 'postgres', name: 'PG' }],
+      }),
+      batchQuery: async () => ({
+        items: [{ data: { frames: [] } }],
+      }),
+    },
+  })
+
+  await assert.rejects(
+    () => manager.instances.batchQuery([
+      { id: 'A', datasourceUid: 'pg', datasourceType: 'postgres' },
+    ]),
+    (error) => {
+      assert.equal(error.name, 'DatasourceValidationError')
+      assert.deepEqual(error.errors, ['items[0].id is required'])
+      return true
+    },
+  )
 })
 
 test('instances.query throws when datasource type has no registered plugin', async () => {

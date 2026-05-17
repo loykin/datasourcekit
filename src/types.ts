@@ -102,11 +102,84 @@ export interface DatasourceListResult {
   nextCursor?: string
 }
 
+export type DatasourceFrameType = string
+export type DatasourceFieldKind = string
+
+export interface DatasourceField {
+  name: string
+  kind?: DatasourceFieldKind
+  type?: string
+  labels?: Record<string, string>
+  values: unknown[]
+  meta?: Record<string, unknown>
+}
+
+export interface DatasourceFrame {
+  name?: string
+  frameType: DatasourceFrameType
+  fields: DatasourceField[]
+  meta?: Record<string, unknown>
+}
+
+export interface QueryStats {
+  executionTimeMs?: number
+  rowsReturned?: number
+  bytesRead?: number
+  meta?: Record<string, unknown>
+}
+
+export interface QueryInspect {
+  rawQuery?: string
+  executedQuery?: string
+  meta?: Record<string, unknown>
+}
+
 export interface QueryResult {
-  columns: Array<{ name: string; type: string; meta?: Record<string, unknown> }>
-  rows: unknown[][]
+  frames: DatasourceFrame[]
+  stats?: QueryStats
+  inspect?: QueryInspect
   requestId?: string
   meta?: Record<string, unknown>
+}
+
+export interface TableRowsInput {
+  columns: Array<{ name: string; type?: string; meta?: Record<string, unknown> }>
+  rows: unknown[][]
+  name?: string
+  meta?: Record<string, unknown>
+}
+
+export interface TableRowsOutput {
+  columns: Array<{ name: string; type?: string; meta?: Record<string, unknown> }>
+  rows: unknown[][]
+}
+
+export function tableRowsToFrame(input: TableRowsInput): DatasourceFrame {
+  return {
+    ...(input.name !== undefined ? { name: input.name } : {}),
+    frameType: 'table',
+    fields: input.columns.map((column, columnIndex) => ({
+      name: column.name,
+      ...(column.type !== undefined ? { type: column.type } : {}),
+      values: input.rows.map((row) => row[columnIndex]),
+      ...(column.meta !== undefined ? { meta: column.meta } : {}),
+    })),
+    ...(input.meta !== undefined ? { meta: input.meta } : {}),
+  }
+}
+
+export function tableFrameToRows(frame: DatasourceFrame): TableRowsOutput {
+  const rowCount = frame.fields.reduce((max, field) => Math.max(max, field.values.length), 0)
+  return {
+    columns: frame.fields.map((field) => ({
+      name: field.name,
+      ...(field.type !== undefined ? { type: field.type } : {}),
+      ...(field.meta !== undefined ? { meta: field.meta } : {}),
+    })),
+    rows: Array.from({ length: rowCount }, (_, rowIndex) =>
+      frame.fields.map((field) => field.values[rowIndex]),
+    ),
+  }
 }
 
 export interface VariableOption {
@@ -125,11 +198,14 @@ export interface DatasourceHealthResult {
   details?: Record<string, unknown>
 }
 
+export type DatasourceSchemaKind = string
+
 export interface DatasourceSchemaNamespace {
   id: string
   name: string
-  kind?: 'database' | 'schema' | 'table' | 'metric' | 'bucket' | 'index' | string
+  kind?: DatasourceSchemaKind
   parentId?: string
+  hasChildren?: boolean
   meta?: Record<string, unknown>
 }
 
@@ -140,8 +216,10 @@ export interface DatasourceSchemaFieldRequest {
 export interface DatasourceSchemaField {
   name: string
   type?: string
+  kind?: DatasourceFieldKind
+  nullable?: boolean
   label?: string
-  description?: string
+  insertText?: string
   meta?: Record<string, unknown>
 }
 
@@ -156,8 +234,8 @@ export interface AnnotationQuery<TQuery = unknown> {
 }
 
 export type BatchQueryResultItem =
-  | { data: QueryResult; error?: never }
-  | { data?: never; error: Error }
+  | { id: string; data: QueryResult; error?: never }
+  | { id: string; data?: never; error: Error }
 
 export interface BatchQueryResult {
   items: BatchQueryResultItem[]
