@@ -38,6 +38,11 @@
     "data",
     "plugin"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/loykin/datasourcekit.git"
+  },
+  "homepage": "https://loykin.github.io/datasourcekit/playground/",
   "license": "MIT",
   "devDependencies": {
     "concurrently": "^9.2.1",
