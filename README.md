@@ -16,105 +16,72 @@ pnpm add @loykin/datasourcekit
 
 This quickstart shows the complete flow:
 
-1. Implement an application backend contract.
+1. Expose an application backend contract.
 2. Define a datasource plugin.
 3. Create a manager.
 4. Register a datasource instance.
 5. Run a query through the backend.
 6. Normalize the backend raw response with the plugin transform.
 
-### 1. Implement The Backend Contract
+### 1. Expose Backend APIs
 
-In a real application, these handlers call your HTTP API, database, secret vault, authorization layer, and datasource driver. This example uses an in-memory backend only to show the contract shape.
+Your backend can be written in Go, Java, Python, Node, or anything else. DatasourceKit does not run in your backend. It only needs the frontend to call backend APIs with this shape.
 
-```ts
-type PostgresOptions = {
-  host: string
-  port: number
-  database: string
-}
+| Operation | Example endpoint | Backend responsibility |
+|---|---|---|
+| List types | `GET /api/datasource-types` | Return installed/available datasource types |
+| Get type | `GET /api/datasource-types/:type` | Return one datasource type |
+| List instances | `GET /api/datasources` | Return datasource instances visible to the user |
+| Create instance | `POST /api/datasources` | Validate, authorize, store safe config, create uid |
+| Update instance | `PATCH /api/datasources/:uid` | Validate, authorize, handle version/conflict |
+| Delete instance | `DELETE /api/datasources/:uid` | Authorize and delete |
+| Query | `POST /api/datasource-query` | Load instance, load secrets, authorize, execute driver |
+| Health | `GET /api/datasources/:uid/health` | Check connection/status |
 
-type PostgresQuery = {
-  rawSql: string
-}
+Example query request body:
 
-const backend = {
-  datasources: new Map<string, {
-    uid: string
-    type: string
-    name: string
-    options: PostgresOptions
-  }>(),
-
-  async listDatasourceTypes() {
-    return [
-      { type: 'postgres', name: 'PostgreSQL', installed: true, enabled: true },
-    ]
+```json
+{
+  "id": "q1",
+  "datasourceUid": "postgres-main",
+  "datasourceType": "postgres",
+  "query": {
+    "rawSql": "select * from users limit 10"
   },
-
-  async getDatasourceType(type: string) {
-    if (type !== 'postgres') throw new Error('not found')
-    return { type: 'postgres', name: 'PostgreSQL', installed: true, enabled: true }
-  },
-
-  async listDatasources() {
-    return { items: [...this.datasources.values()], total: this.datasources.size }
-  },
-
-  async getDatasource(uid: string) {
-    const datasource = this.datasources.get(uid)
-    if (!datasource) throw new Error('not found')
-    return datasource
-  },
-
-  async createDatasource(input: {
-    type: string
-    name: string
-    options?: PostgresOptions
-  }) {
-    const datasource = {
-      uid: `ds-${Date.now()}`,
-      type: input.type,
-      name: input.name,
-      options: input.options ?? { host: 'localhost', port: 5432, database: 'app' },
-    }
-    this.datasources.set(datasource.uid, datasource)
-    return datasource
-  },
-
-  async updateDatasource(uid: string, patch: { name?: string; options?: PostgresOptions }) {
-    const current = await this.getDatasource(uid)
-    const next = { ...current, ...patch }
-    this.datasources.set(uid, next)
-    return next
-  },
-
-  async deleteDatasource(uid: string) {
-    this.datasources.delete(uid)
-  },
-
-  async queryDatasource(request: {
-    datasourceUid: string
-    query?: PostgresQuery
-    options?: Record<string, unknown>
-  }) {
-    const datasource = await this.getDatasource(request.datasourceUid)
-
-    // A real backend would load secrets, check permissions, and execute the PostgreSQL driver here.
-    return {
-      fields: ['database', 'sql', 'timeout'],
-      rows: [[
-        datasource.options.database,
-        request.query?.rawSql ?? '',
-        request.options?.timeoutMs ?? null,
-      ]],
-      requestId: `req-${Date.now()}`,
-    }
-  },
+  "options": {
+    "timeoutMs": 30000
+  }
 }
 ```
 
-### 2. Define A Datasource Plugin
+The backend should return either a normalized `QueryResult` or a type-specific raw response that the plugin can normalize.
+
+### 2. Create A Frontend Backend Client
+
+This is frontend code. It can call any backend implementation.
+
+```ts
+const backend = {
+  listDatasourceTypes: (ctx) =>
+    api.get('/api/datasource-types', ctx),
+  getDatasourceType: (type, ctx) =>
+    api.get(`/api/datasource-types/${type}`, ctx),
+  listDatasourceInstances: (options, ctx) =>
+    api.get('/api/datasources', { ...ctx, params: options }),
+  getDatasourceInstance: (uid, ctx) =>
+    api.get(`/api/datasources/${uid}`, ctx),
+  createDatasourceInstance: (input, ctx) =>
+    api.post('/api/datasources', input, ctx),
+  updateDatasourceInstance: (uid, patch, ctx) =>
+    api.patch(`/api/datasources/${uid}`, patch, ctx),
+  deleteDatasourceInstance: (uid, ctx) =>
+    api.delete(`/api/datasources/${uid}`, ctx),
+  queryDatasource: (request, ctx) =>
+    api.post('/api/datasource-query', request, ctx),
+}
+```
+
+### 3. Define A Datasource Plugin
 
 A plugin owns the type-specific UI hooks and response normalization. PostgreSQL and ClickHouse may return different raw backend response shapes, so `transform` belongs to the plugin, not to the manager backend.
 
@@ -124,6 +91,16 @@ import {
   defineDatasourcePlugin,
   type QueryResult,
 } from '@loykin/datasourcekit'
+
+type PostgresOptions = {
+  host: string
+  port: number
+  database: string
+}
+
+type PostgresQuery = {
+  rawSql: string
+}
 
 function normalizePostgresResult(raw: unknown): QueryResult {
   const response = raw as {
@@ -153,7 +130,7 @@ const postgresPlugin = defineDatasourcePlugin<PostgresOptions, PostgresQuery>({
 })
 ```
 
-### 3. Create The Manager
+### 4. Create The Manager
 
 `createDatasourceManager` wires frontend plugin routing to your backend handlers.
 
@@ -166,18 +143,18 @@ const manager = createDatasourceManager({
       get: (type, ctx) => backend.getDatasourceType(type, ctx),
     },
     instances: {
-      list: (options, ctx) => backend.listDatasources(options, ctx),
-      get: (uid, ctx) => backend.getDatasource(uid, ctx),
-      create: (input, ctx) => backend.createDatasource(input, ctx),
-      update: (uid, patch, ctx) => backend.updateDatasource(uid, patch, ctx),
-      delete: (uid, ctx) => backend.deleteDatasource(uid, ctx),
+      list: (options, ctx) => backend.listDatasourceInstances(options, ctx),
+      get: (uid, ctx) => backend.getDatasourceInstance(uid, ctx),
+      create: (input, ctx) => backend.createDatasourceInstance(input, ctx),
+      update: (uid, patch, ctx) => backend.updateDatasourceInstance(uid, patch, ctx),
+      delete: (uid, ctx) => backend.deleteDatasourceInstance(uid, ctx),
     },
     query: (request, ctx) => backend.queryDatasource(request, ctx),
   },
 })
 ```
 
-### 4. Register A Datasource Instance
+### 5. Register A Datasource Instance
 
 `options` is type-specific safe config. Do not put passwords, tokens, or other secrets here. Secrets should stay in the backend.
 
@@ -193,7 +170,7 @@ const datasource = await manager.instances.create({
 })
 ```
 
-### 5. Run A Query
+### 6. Run A Query
 
 `query` is the type-specific query body. `options` is execution metadata such as timeout, max rows, or cache hints.
 
