@@ -47,6 +47,12 @@ jobs:
       - name: Type check
         run: pnpm type-check
 
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Verify packaged consumer app
+        run: pnpm test:consumer
+
       - name: Build package
         run: pnpm build
 

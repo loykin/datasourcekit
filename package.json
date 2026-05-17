@@ -28,6 +28,7 @@
     "playground": "pnpm --dir playground dev",
     "playground:build": "pnpm --dir playground build",
     "test": "pnpm build && node --test test/*.test.mjs",
+    "test:consumer": "node scripts/verify-package-consumer.mjs",
     "type-check": "tsc -p tsconfig.json --noEmit"
   },
   "keywords": [
