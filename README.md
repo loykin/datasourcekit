@@ -4,8 +4,6 @@ DatasourceKit is a frontend contract layer for building datasource management an
 
 DatasourceKit is not a backend, not a datasource store, and not the source of truth for permissions or secrets. Datasource types, datasource instances, secrets, authorization, and actual query execution belong to your application backend.
 
-For the full architecture, see [`docs/design.md`](docs/design.md).
-
 ## Install
 
 ```bash
@@ -315,24 +313,6 @@ const backend = createRestDatasourceManager({
   },
 })
 ```
-
-## Framework And Product Adapters
-
-DatasourceKit does not ship product-specific adapters from the core package. Dashboard, alerting, reporting, or React adapters should live in the consuming package or in a separate optional package.
-
-For example, a dashboard package can map its own panel request type into `DataQuery`:
-
-```ts
-const result = await manager.instances.query({
-  id: panelRequest.id,
-  datasourceUid: panelRequest.uid,
-  datasourceType: panelRequest.type,
-  query: panelRequest.query,
-  options: panelRequest.options,
-}, datasourceContext)
-```
-
-This keeps DatasourceKit focused on the datasource domain contract instead of depending on a specific product runtime.
 
 ## Error Model
 
