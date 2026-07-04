@@ -45,7 +45,7 @@
   "homepage": "https://loykin.github.io/datasourcekit/playground/",
   "license": "MIT",
   "devDependencies": {
-    "concurrently": "^9.2.1",
+    "concurrently": "^10.0.3",
     "tsup": "^8.4.0",
     "typescript": "^6.0.3"
   },
